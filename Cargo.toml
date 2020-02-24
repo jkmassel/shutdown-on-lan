@@ -1,0 +1,21 @@
+[package]
+name = "shutdown-on-lan"
+version = "0.1.0"
+authors = ["Jeremy Massel"]
+edition = "2018"
+default-run = "shutdown-on-lan"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4.8"
+simplelog = "^0.7.4"
+windows-service = "0.2.0"
+systemstat = "0.1.5"
+heim = "0.0.10"
+futures = "0.3"
+itertools = "0.8.2"
+
+[[bin]]
+name = "installer"
+path = "src/installer.rs"
