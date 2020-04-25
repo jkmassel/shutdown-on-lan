@@ -1,20 +1,29 @@
-extern crate heim;
 extern crate log;
 extern crate simplelog;
-#[macro_use]
-extern crate itertools;
+extern crate system_shutdown;
 extern crate windows_service;
 
-use futures::*;
-use heim::net::*;
 use log::info;
 use simplelog::*;
 use std::fs::File;
+use std::net::{ IpAddr, Ipv4Addr };
+use std::net::{ToSocketAddrs, SocketAddr};
+use std::vec;
 
 #[cfg(windows)]
 fn main() -> windows_service::Result<()> {
     init_logging();
-    return shutdown_on_lan_service::run();
+
+    let config = AppConfiguration(
+        53632,
+        [
+            [127, 0, 0, 1],
+            [10, 0, 1, 39],
+        ],
+        "secret!"
+    );
+
+    return shutdown_on_lan_service::run(config);
 }
 
 fn init_logging() {
@@ -28,175 +37,95 @@ fn init_logging() {
     info!("File Logger Initialized");
 }
 
-#[derive(Debug)]
-struct InterfaceDetails {
-    name: String,
-    mac_address: MacAddr6,
-    ip_address: std::net::SocketAddr,
-}
-
-#[derive(Debug, Clone)]
-struct PartialInterface {
-    name: String,
-    mac_address: Option<MacAddr6>,
-    ip_v4_address: Option<std::net::Ipv4Addr>,
-    ip_v6_address: Option<std::net::Ipv6Addr>,
-}
-
-impl PartialInterface {
-    fn merge(&self, other: PartialInterface) -> PartialInterface {
-        if let Some(my_mac_address) = other.mac_address {
-            return PartialInterface {
-                name: self.name.clone(),
-                mac_address: Some(my_mac_address),
-                ip_v4_address: self.ip_v4_address,
-                ip_v6_address: self.ip_v6_address,
-            };
-        }
-
-        if let Some(my_ip_v4_address) = other.ip_v4_address {
-            return PartialInterface {
-                name: self.name.clone(),
-                mac_address: self.mac_address,
-                ip_v4_address: Some(my_ip_v4_address),
-                ip_v6_address: self.ip_v6_address,
-            };
-        }
-
-        if let Some(my_ip_v6_address) = other.ip_v6_address {
-            return PartialInterface {
-                name: self.name.clone(),
-                mac_address: self.mac_address,
-                ip_v4_address: self.ip_v4_address,
-                ip_v6_address: Some(my_ip_v6_address),
-            };
-        }
-
-        return PartialInterface {
-            name: self.name.clone(),
-            mac_address: self.mac_address,
-            ip_v4_address: self.ip_v4_address,
-            ip_v6_address: self.ip_v6_address,
-        };
-    }
-}
-
-impl InterfaceDetails {
-    fn with(
-        name: String,
-        mac_address: Option<MacAddr6>,
-        ip_address: Option<std::net::SocketAddr>,
-    ) -> Option<InterfaceDetails> {
-        let mut details: Option<InterfaceDetails> = None;
-
-        if let Some(__mac) = mac_address {
-            if let Some(__ip) = ip_address {
-                details = Some(InterfaceDetails {
-                    name: name,
-                    mac_address: __mac,
-                    ip_address: __ip,
-                });
-            }
-        }
-
-        details
-    }
-}
-
-fn get_mac_address() {
-    use itertools::Itertools;
-    use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
-
-    let mut nic_stream = heim::net::nic();
-
-    let mut components = Vec::<PartialInterface>::new();
-
-    while let Some(wrapped_nic) = executor::block_on(nic_stream.next()) {
-        let nic = wrapped_nic.unwrap();
-
-        let name = nic.name().to_string();
-        let mut mac_address: Option<MacAddr6> = None;
-        let mut v4_ip_address: Option<std::net::Ipv4Addr> = None;
-        let mut v6_ip_address: Option<std::net::Ipv6Addr> = None;
-
-        if let Address::Link(link) = nic.address() {
-            if let MacAddr::V6(v6_address) = link {
-                mac_address = Some(v6_address).clone();
-            }
-        }
-
-        if let Address::Inet(ip_address) = nic.address() {
-            if let SocketAddr::V4(v4_address) = ip_address {
-                v4_ip_address = Some(v4_address.ip().clone());
-            }
-
-            if let SocketAddr::V6(v6_address) = ip_address {
-                v6_ip_address = Some(v6_address.ip().clone())
-            }
-        }
-
-        let component = PartialInterface {
-            name: name,
-            mac_address: mac_address,
-            ip_v4_address: v4_ip_address,
-            ip_v6_address: v6_ip_address,
-        };
-
-        println!(
-            "===\n{:?}\n \t{:?}\t{:?}\n\n",
-            nic, mac_address, v4_ip_address
-        );
-
-        components.push(component);
-    }
-
-    use std::collections::HashMap;
-    let mut interfaces = HashMap::<String, PartialInterface>::new();
-
-    for component in components {
-        let name = component.name.clone();
-
-        if let Some(interface) = interfaces.get(&name).clone() {
-            interfaces.insert(name, interface.merge(component));
-        } else {
-            interfaces.insert(name, component.clone());
-        }
-    }
-
-    println!("=== {:?}", interfaces);
-
-    // let groups = components.iter()
-    //     .group_by(|component| component.0)
-    //     .map( |group|
-
-    //         group.foo;
-
-    //         let name = nic.name().to_string();
-    //         let mut mac_address: Option<MacAddr6> = None;
-    //         let mut v4_ip_address: Option<std::net::SocketAddr> = None;
-
-    //         name
-    //     )
-    //     .collect::<Vec<_>>();
-
-    // for (key, group) in groups {
-    //     println!(":: {:?} {:?}", key, group);
-    // }
-
-    // if let Some(interface) = InterfaceDetails::with(name, mac_address, v4_ip_address) {
-    //     interfaces.push(interface);
-    // }
-    // let nics = Vec::<heim::net::Nic>::new();
-
-    // let groups = nics.into_iter().group_by( |nic| nic.name() );
-}
-
-#[cfg(not(windows))]
 fn main() {
     init_logging();
-    print!("Other test\n");
-    get_mac_address();
-    print!("Exiting");
+
+    let config = AppConfiguration {
+        port_number: 53632,
+        addresses: [
+            IpAddr::from(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::from(Ipv4Addr::new(10, 0, 1, 39)),
+        ].to_vec(),
+        secret: "secret!".to_string()
+    };
+
+    listener_service::run(&config);
+}
+
+pub struct AppConfiguration {
+    port_number: u16,
+    addresses: Vec<IpAddr>,
+    secret: String,
+}
+
+impl ToSocketAddrs for AppConfiguration {
+    type Iter = vec::IntoIter<SocketAddr>;
+
+    fn to_socket_addrs(&self) -> std::io::Result<vec::IntoIter<SocketAddr>> {
+        let mut addresses : Vec<SocketAddr> = Vec::new();
+        
+        for ip in self.addresses.clone() {
+            // let mut address = SocketAddr::from((ip, self.port_number));
+            addresses.push(SocketAddr::from((ip, self.port_number)));
+        }
+
+        let ret = addresses.into_iter();
+        return Ok(ret);
+    }
+}
+
+mod listener_service {
+    use crate::AppConfiguration;
+    use std::io::Read;
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    // use log::{info, warn};
+    use system_shutdown::shutdown;
+
+    pub fn run(configuration: &AppConfiguration) {
+        
+        // let __addrs = [SocketAddr::from(([127, 0, 0, 1], provider.port_number))];
+        let listener = TcpListener::bind(configuration).unwrap();
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    println!("New connection: {}", stream.peer_addr().unwrap());
+                    handle_stream(stream, &configuration.secret)
+                }
+                Err(e) => {
+                    println!("Error: {}", e);
+                    /* connection failed */
+                }
+            }
+        }
+    }
+
+    pub fn handle_stream(mut stream: TcpStream, secret: &String) {
+        let mut buffer = String::new();
+
+        match stream.read_to_string(&mut buffer) {
+            Ok(_) => {
+                let input = &buffer.trim();
+                if secret == input {
+
+                    match shutdown() {
+                        Ok(_) => println!("Shutting down."),
+                        Err(error) => eprintln!("Failed to shut down: {}", error),
+                    }
+                }
+                else {
+                    println!("Invalid Secret: {}", input);
+                }
+            }
+            Err(_) => {
+                println!(
+                    "An error occurred, terminating connection with {}",
+                    stream.peer_addr().unwrap()
+                );
+                stream.shutdown(Shutdown::Both).unwrap();
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -204,7 +133,6 @@ mod shutdown_on_lan_service {
 
     use std::{
         ffi::OsString,
-        //net::{IpAddr, SocketAddr, UdpSocket},
         sync::mpsc,
         thread,
         time::Duration,
