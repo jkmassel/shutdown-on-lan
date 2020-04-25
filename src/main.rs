@@ -37,6 +37,7 @@ fn init_logging() {
     info!("File Logger Initialized");
 }
 
+#[cfg(not(windows))]
 fn main() {
     init_logging();
 
