@@ -78,12 +78,9 @@ mod listener_service {
     use crate::AppConfiguration;
     use std::io::Read;
     use std::net::{Shutdown, TcpListener, TcpStream};
-    // use log::{info, warn};
     use system_shutdown::shutdown;
 
     pub fn run(configuration: &AppConfiguration) {
-        
-        // let __addrs = [SocketAddr::from(([127, 0, 0, 1], provider.port_number))];
         let listener = TcpListener::bind(configuration).unwrap();
 
         for stream in listener.incoming() {
@@ -93,8 +90,7 @@ mod listener_service {
                     handle_stream(stream, &configuration.secret)
                 }
                 Err(e) => {
-                    println!("Error: {}", e);
-                    /* connection failed */
+                    eprintln!("Error initializing socket: {}", e);
                 }
             }
         }
@@ -113,12 +109,9 @@ mod listener_service {
                         Err(error) => eprintln!("Failed to shut down: {}", error),
                     }
                 }
-                else {
-                    println!("Invalid Secret: {}", input);
-                }
             }
             Err(_) => {
-                println!(
+                eprintln!(
                     "An error occurred, terminating connection with {}",
                     stream.peer_addr().unwrap()
                 );
@@ -192,7 +185,7 @@ mod shutdown_on_lan_service {
                     shutdown_tx.send(()).unwrap();
                     ServiceControlHandlerResult::NoError
                 }
-
+ 
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         };
