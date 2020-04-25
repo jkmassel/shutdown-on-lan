@@ -14,16 +14,16 @@ use std::vec;
 fn main() -> windows_service::Result<()> {
     init_logging();
 
-    let config = AppConfiguration(
-        53632,
-        [
-            [127, 0, 0, 1],
-            [10, 0, 1, 39],
-        ],
-        "secret!"
-    );
+    let config = AppConfiguration {
+        port_number: 53632,
+        addresses: [
+            IpAddr::from(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::from(Ipv4Addr::new(10, 0, 1, 39)),
+        ].to_vec(),
+        secret: "secret!".to_string()
+    };
 
-    return shutdown_on_lan_service::run(config);
+    return shutdown_on_lan_service::run(&config);
 }
 
 fn init_logging() {
@@ -125,6 +125,8 @@ mod listener_service {
 #[cfg(windows)]
 mod shutdown_on_lan_service {
 
+    use crate::AppConfiguration;
+
     use std::{
         ffi::OsString,
         sync::mpsc,
@@ -142,10 +144,16 @@ mod shutdown_on_lan_service {
         service_dispatcher, Result,
     };
 
+    use log::{
+        info,
+        warn
+	};
+
+
     const SERVICE_NAME: &str = "shutdown-on-lan";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
-    pub fn run() -> Result<()> {
+    pub fn run(configuration: &AppConfiguration) -> Result<()> {
         // Register generated `ffi_service_main` with the system and start the service, blocking
         // this thread until the service is stopped.
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
