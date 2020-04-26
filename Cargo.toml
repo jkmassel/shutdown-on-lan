@@ -15,6 +15,9 @@ systemstat = "0.1.5"
 itertools = "0.8.2"
 system_shutdown = "3.0.0"
 
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.7" }
+
 [[bin]]
 name = "installer"
 path = "src/installer.rs"
