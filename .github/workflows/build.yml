@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build
+        run: |
+          cargo build --release
+          cp target/release/shutdown-on-lan.exe build/windows/shutdown-on-lan.exe
+      - name: Package
+        run: |
+          cd build
+          cd windows
+          &"$Env:WIX\bin\candle.exe" Product.wxs
+          &"$Env:WIX\bin\light.exe" Product.wixobj
+          mv Product.msi shutdown-on-lan.msi
+      - uses: actions/upload-artifact@v1
+        with:
+          name: shutdown-on-lan-windows.zip
+          path: build/windows/shutdown-on-lan.msi
