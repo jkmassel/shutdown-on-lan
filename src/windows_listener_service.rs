@@ -27,12 +27,6 @@ pub mod shutdown_on_lan_service {
         service_dispatcher, Result,
     };
 
-    use log::{
-        info,
-        warn,
-        error,
-	};
-
     use winreg::enums::*;
 
     const SERVICE_NAME: &str = "shutdown-on-lan";
@@ -75,11 +69,11 @@ pub mod shutdown_on_lan_service {
         let hkcu = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
         let path = Path::new("Software").join("ShutdownOnLan");
         let (key, disposition) = hkcu.create_subkey(&path)?;
-        log::info!("Created Subkey");
+        log::debug!("Created Subkey");
 
         match disposition {
             REG_CREATED_NEW_KEY => {
-                log::info!("Created Registry Key - writing new configuration from defaults");
+                log::debug!("Created Registry Key - writing new configuration from defaults");
 
                 let configuration = AppConfiguration::default();
                 
@@ -90,15 +84,15 @@ pub mod shutdown_on_lan_service {
                 let joined_addresses = addresses.join(",");
                 key.set_value(IP_ADDRESS_KEY, &joined_addresses)?;
 
-                log::info!("Set IP Addresses to {}", joined_addresses);
+                log::debug!("Set IP Addresses to {}", joined_addresses);
 
                 let u32_port_number = configuration.port_number as u32;
                 key.set_value(PORT_KEY, &u32_port_number)?;
 
-                log::info!("Set Port to {}", u32_port_number);
+                log::debug!("Set Port to {}", u32_port_number);
 
                 key.set_value(SECRET_KEY, &configuration.secret)?;
-                log::info!("Set secret to {}", configuration.secret);
+                log::debug!("Set secret to {}", configuration.secret);
 
                 return Ok(configuration)
             },
@@ -162,20 +156,20 @@ pub mod shutdown_on_lan_service {
         let config = match get_configuration() {
             Ok(configuration) => configuration,
             Err(err) => {
-                error!("Configuration retrieval error: {}", err);
-                error!("Unable to read configuration - exiting");
+                log::error!("Configuration retrieval error: {}", err);
+                log::error!("Unable to read configuration - exiting");
                 return Ok(());
             }
         };
 
-        info!("About to start listener service");
+        log::debug!("About to start listener service");
         thread::spawn(move || {
             listener_service::run(&config);
         });
-        info!("Started listener service");
+        log::info!("Started listener service");
 
         loop {
-            info!(target: SERVICE_NAME, "HERE");
+            log::debug!(target: SERVICE_NAME, "-- Event Loop --");
 
             thread::sleep(Duration::from_millis(1000));
 
@@ -189,7 +183,7 @@ pub mod shutdown_on_lan_service {
             };
         }
         
-        warn!("Attempting to exit");
+        log::info!("Attempting to exit");
 
         // Tell the system that service has stopped.
         status_handle.set_service_status(ServiceStatus {

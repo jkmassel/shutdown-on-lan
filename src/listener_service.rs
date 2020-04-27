@@ -11,7 +11,7 @@ pub mod listener_service {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    log::info!("New connection: {}", stream.peer_addr().unwrap());
+                    log::debug!("New connection: {}", stream.peer_addr().unwrap());
                     handle_stream(stream, &configuration.secret)
                 }
                 Err(e) => {
@@ -27,7 +27,7 @@ pub mod listener_service {
         match stream.read_to_string(&mut buffer) {
             Ok(_) => {
                 let input = &buffer.trim();
-                log::info!("Comparing {} and {}", input, secret);
+                log::debug!("Comparing {} and {}", input, secret);
                 if secret == input {
 
                     match shutdown() {
@@ -36,7 +36,7 @@ pub mod listener_service {
                     }
                 }
 
-                log::info!("Received message: {}", input);
+                log::debug!("Received message: {}", input);
             }
             Err(_) => {
                 log::error!(

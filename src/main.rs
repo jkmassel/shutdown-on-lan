@@ -3,7 +3,6 @@ extern crate simplelog;
 extern crate system_shutdown;
 extern crate windows_service;
 
-use log::info;
 use simplelog::*;
 use std::fs::File;
 use std::vec;
@@ -28,11 +27,16 @@ fn main() {
 
     init_logging();
 
-    let config = AppConfiguration::default();
+    let config: AppConfiguration = AppConfiguration::default();
     listener_service::run(&config);
 }
 
 fn init_logging() {
+
+    if !cfg!(debug_assertions) {
+        return
+    }
+
     CombinedLogger::init(vec![WriteLogger::new(
         LevelFilter::Info,
         Config::default(),
@@ -40,5 +44,5 @@ fn init_logging() {
     )])
     .unwrap();
 
-    info!("File Logger Initialized");
+    log::debug!("File Logger Initialized");
 }
