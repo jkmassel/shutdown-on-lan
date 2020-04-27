@@ -1,5 +1,6 @@
 pub mod listener_service {
     use std::io::Read;
+    use std::thread;
     use std::net::{Shutdown, TcpListener, TcpStream};
     use system_shutdown::shutdown;
 
@@ -11,8 +12,12 @@ pub mod listener_service {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    log::debug!("New connection: {}", stream.peer_addr().unwrap());
-                    handle_stream(stream, &configuration.secret)
+                    let secret = configuration.secret.clone();
+
+                    thread::spawn(move|| {
+                        log::debug!("New connection: {}", stream.peer_addr().unwrap());
+                        handle_stream(stream, &secret)
+                    });
                 }
                 Err(e) => {
                     log::error!("Error initializing socket: {}", e);
