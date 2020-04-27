@@ -1,7 +1,7 @@
 pub mod listener_service {
     use std::io::Read;
-    use std::thread;
     use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::thread;
     use system_shutdown::shutdown;
 
     use crate::configuration::AppConfiguration;
@@ -14,7 +14,7 @@ pub mod listener_service {
                 Ok(stream) => {
                     let secret = configuration.secret.clone();
 
-                    thread::spawn(move|| {
+                    thread::spawn(move || {
                         log::debug!("New connection: {}", stream.peer_addr().unwrap());
                         handle_stream(stream, &secret)
                     });
@@ -26,15 +26,14 @@ pub mod listener_service {
         }
     }
 
-    pub fn handle_stream(mut stream: TcpStream, secret: &String) {
+    pub fn handle_stream(mut stream: TcpStream, secret: &str) {
         let mut buffer = String::new();
 
         match stream.read_to_string(&mut buffer) {
             Ok(_) => {
                 let input = &buffer.trim();
                 log::debug!("Comparing {} and {}", input, secret);
-                if secret == input {
-
+                if &secret == input {
                     match shutdown() {
                         Ok(_) => log::info!("Shutting down."),
                         Err(error) => log::error!("Failed to shut down: {}", error),

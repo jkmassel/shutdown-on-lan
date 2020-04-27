@@ -3,18 +3,10 @@ extern crate windows_service;
 #[cfg(windows)]
 pub mod shutdown_on_lan_service {
 
-    use crate::{
-        configuration::AppConfiguration,
-        listener_service::listener_service,
-    };
+    use crate::{configuration::AppConfiguration, listener_service::listener_service};
 
     use std::{
-        ffi::OsString,
-        sync::mpsc,
-        thread,
-        time::Duration,
-        io::Result as RustResult,
-        path::Path,
+        ffi::OsString, io::Result as RustResult, path::Path, sync::mpsc, thread, time::Duration,
     };
 
     use windows_service::{
@@ -58,7 +50,6 @@ pub mod shutdown_on_lan_service {
     // }
 
     pub fn get_configuration() -> RustResult<AppConfiguration> {
-
         const IP_ADDRESS_KEY: &str = "ip_addresses";
         const PORT_KEY: &str = "port";
         const SECRET_KEY: &str = "secret";
@@ -76,11 +67,13 @@ pub mod shutdown_on_lan_service {
                 log::debug!("Created Registry Key - writing new configuration from defaults");
 
                 let configuration = AppConfiguration::default();
-                
-                let addresses: Vec<String> = configuration.addresses.iter()
-                    .map(|ip| ip.to_string() )
+
+                let addresses: Vec<String> = configuration
+                    .addresses
+                    .iter()
+                    .map(|ip| ip.to_string())
                     .collect();
-                
+
                 let joined_addresses = addresses.join(",");
                 key.set_value(IP_ADDRESS_KEY, &joined_addresses)?;
 
@@ -94,31 +87,31 @@ pub mod shutdown_on_lan_service {
                 key.set_value(SECRET_KEY, &configuration.secret)?;
                 log::debug!("Set secret to {}", configuration.secret);
 
-                return Ok(configuration)
-            },
+                return Ok(configuration);
+            }
             REG_OPENED_EXISTING_KEY => {
                 let ips_string: String = key.get_value(IP_ADDRESS_KEY)?;
                 let ips_list: Vec<&str> = ips_string.split(",").collect();
-               
-                let ip_addresses = ips_list.iter()
-                .map(|&ip| ip.parse().ok())
-                .flat_map(|x| x)
-                .collect();
-        
+
+                let ip_addresses = ips_list
+                    .iter()
+                    .map(|&ip| ip.parse().ok())
+                    .flat_map(|x| x)
+                    .collect();
+
                 let port: u32 = key.get_value(PORT_KEY)?;
                 let secret: String = key.get_value(SECRET_KEY)?;
 
                 return Ok(AppConfiguration {
                     port_number: port as u16,
-                    secret: secret,
                     addresses: ip_addresses,
-                })
+                    secret,
+                });
             }
         };
     }
 
     pub fn run_service() -> Result<()> {
-         
         // Create a channel to be able to poll a stop event from the service worker loop.
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
@@ -134,7 +127,7 @@ pub mod shutdown_on_lan_service {
                     shutdown_tx.send(()).unwrap();
                     ServiceControlHandlerResult::NoError
                 }
- 
+
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         };
@@ -182,7 +175,7 @@ pub mod shutdown_on_lan_service {
                 Err(mpsc::RecvTimeoutError::Timeout) => (),
             };
         }
-        
+
         log::info!("Attempting to exit");
 
         // Tell the system that service has stopped.

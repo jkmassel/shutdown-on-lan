@@ -20,10 +20,7 @@ fn main() -> windows_service::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    use crate::{
-        configuration::AppConfiguration,
-        listener_service::listener_service,
-    };
+    use crate::{configuration::AppConfiguration, listener_service::listener_service};
 
     init_logging();
 
@@ -32,9 +29,8 @@ fn main() {
 }
 
 fn init_logging() {
-
     if !cfg!(debug_assertions) {
-        return
+        return;
     }
 
     CombinedLogger::init(vec![WriteLogger::new(

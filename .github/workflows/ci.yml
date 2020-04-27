@@ -7,6 +7,15 @@ on:
     branches: [ master ]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Lint
+        run: cargo fmt --verbose
+      - name: Style
+        run: rustup component add clippy && cargo clippy
+
   build:
     strategy:
       matrix:
