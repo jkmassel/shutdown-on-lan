@@ -1,7 +1,6 @@
 extern crate log;
 extern crate simplelog;
 extern crate system_shutdown;
-extern crate windows_service;
 
 use simplelog::*;
 use std::fs::File;
@@ -13,6 +12,8 @@ mod windows_listener_service;
 
 #[cfg(windows)]
 fn main() -> windows_service::Result<()> {
+    extern crate windows_service;
+
     init_logging();
     use crate::windows_listener_service::shutdown_on_lan_service;
     return shutdown_on_lan_service::run();

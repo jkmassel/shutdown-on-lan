@@ -1,7 +1,7 @@
-extern crate windows_service;
 
 #[cfg(windows)]
 pub mod shutdown_on_lan_service {
+    extern crate windows_service;
 
     use crate::{configuration::AppConfiguration, listener_service::listener_service};
 
