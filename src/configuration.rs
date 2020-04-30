@@ -61,6 +61,11 @@ impl AppConfiguration {
 
         config
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn fetch() -> AppConfiguration {
+        AppConfiguration::default()
+    }
 }
 
 impl ToSocketAddrs for AppConfiguration {
