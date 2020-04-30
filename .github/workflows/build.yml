@@ -26,3 +26,19 @@ jobs:
         with:
           name: shutdown-on-lan-windows.zip
           path: build/windows/shutdown-on-lan.msi
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build
+        run: |
+          cargo build --release
+      - name: Package
+        run: |
+          cd build/mac
+          chmod +x build-installer.sh
+          ./build-installer.sh
+      - uses: actions/upload-artifact@v1
+        with:
+          name: shutdownonlan.pkg
+          path: build/mac/shutdownonlan.pkg

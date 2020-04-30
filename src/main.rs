@@ -24,21 +24,27 @@ fn main() {
 
     init_logging();
 
-    let config: AppConfiguration = AppConfiguration::default();
+    let config = AppConfiguration::fetch();
     listener_service::run(&config);
 }
 
 fn init_logging() {
-    if !cfg!(debug_assertions) {
-        return;
+    let mut loggers = vec![];
+
+    match TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed) {
+        Some(logger) => loggers.push(logger as Box<dyn SharedLogger>),
+        None => loggers.push(SimpleLogger::new(LevelFilter::Warn, Config::default())),
     }
 
-    CombinedLogger::init(vec![WriteLogger::new(
-        LevelFilter::Info,
-        Config::default(),
-        File::create("output.log").unwrap(),
-    )])
-    .unwrap();
+    if cfg!(debug_assertions) {
+        loggers.push(WriteLogger::new(
+            LevelFilter::Info,
+            Config::default(),
+            File::create("output.log").unwrap(),
+        ));
+    }
+
+    CombinedLogger::init(loggers).unwrap();
 
     log::debug!("File Logger Initialized");
 }

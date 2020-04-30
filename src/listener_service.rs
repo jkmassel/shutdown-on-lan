@@ -15,7 +15,7 @@ pub mod listener_service {
                     let secret = configuration.secret.clone();
 
                     thread::spawn(move || {
-                        log::debug!("New connection: {}", stream.peer_addr().unwrap());
+                        log::info!("New connection: {}", stream.peer_addr().unwrap());
                         handle_stream(stream, &secret)
                     });
                 }
@@ -35,7 +35,9 @@ pub mod listener_service {
                 log::debug!("Comparing {} and {}", input, secret);
                 if &secret == input {
                     match shutdown() {
-                        Ok(_) => log::info!("Shutting down."),
+                        Ok(_) => {
+                            log::info!("Shutting down - source: {}", stream.peer_addr().unwrap())
+                        }
                         Err(error) => log::error!("Failed to shut down: {}", error),
                     }
                 }

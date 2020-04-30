@@ -15,3 +15,7 @@
 
 # Log File
 /output.log
+
+# Installer Artifacts
+/build/mac/root
+/build/mac/shutdownonlan.pkg
