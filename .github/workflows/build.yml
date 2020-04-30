@@ -36,8 +36,8 @@ jobs:
         run: |
           cd build
           cd windows
-          &"$Env:WIX\bin\candle.exe" Product.wxs
-          &"$Env:WIX\bin\light.exe" Product.wixobj
+          &"$Env:WIX\bin\candle.exe" -ext WixFirewallExtension Product.wxs
+          &"$Env:WIX\bin\light.exe" -ext WixFirewallExtension Product.wixobj
           mv Product.msi shutdown-on-lan.msi
       - name: Upload Artifact
         uses: actions/upload-artifact@v1
