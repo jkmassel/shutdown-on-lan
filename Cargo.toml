@@ -18,6 +18,7 @@ serde = { version = "1.0", features = ["derive"] }
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.7" }
 windows-service = "0.2.0"
+winlog = "0.1.0"
 
 [target.'cfg(not(windows))'.dependencies]
 plist = "1"
