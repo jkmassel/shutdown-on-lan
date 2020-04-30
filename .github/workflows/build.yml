@@ -2,15 +2,14 @@ name: Build
 
 on:
   push:
-    branches: [ master ]
     tags:
       - '*'
-  pull_request:
-    branches: [ master ]
 
 jobs:
   setup:
     runs-on: ubuntu-latest
+    outputs:
+      uploadurl: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - name: Create Release
         id: create_release
@@ -19,10 +18,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
         with:
           tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+          release_name: ShutdownOnLan ${{ github.ref }}
           body: ""
           draft: true
           prerelease: false
+
   windows:
     runs-on: windows-latest
     needs: [setup]
@@ -39,14 +39,33 @@ jobs:
           &"$Env:WIX\bin\candle.exe" Product.wxs
           &"$Env:WIX\bin\light.exe" Product.wixobj
           mv Product.msi shutdown-on-lan.msi
-      - uses: actions/upload-artifact@v1
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v1
         with:
           name: shutdown-on-lan-windows.zip
           path: build/windows/shutdown-on-lan.msi
+      - name: Attach Artifact to Release
+        id: upload-windows-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.setup.outputs.uploadurl}}
+          asset_path: build/windows/shutdown-on-lan.msi
+          asset_name: shutdown-on-lan-windows.zip
+          asset_content_type: application/zip
+
   mac:
     runs-on: macos-latest
     needs: [setup]
     steps:
+      - name: Test
+        run: |
+          echo ${{ env.UPLOAD_URL }}
+          echo "${{ env.UPLOAD_URL }}"
+          echo $UPLOAD_URL
+          echo "Foo"
+          echo ${{needs.setup.outputs.uploadurl}}
       - uses: actions/checkout@v2
       - name: Build
         run: |
@@ -56,7 +75,18 @@ jobs:
           cd build/mac
           chmod +x build-installer.sh
           ./build-installer.sh
-      - uses: actions/upload-artifact@v1
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v1
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
+      - name: Attach Artifact to Release
+        id: upload-mac-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.setup.outputs.uploadurl}}
+          asset_path: build/mac/shutdownonlan.pkg
+          asset_name: shutdownonlan.pkg
+          asset_content_type: application/x-newton-compatible-pkg
