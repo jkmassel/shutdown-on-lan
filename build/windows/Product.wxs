@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:fire="http://schemas.microsoft.com/wix/FirewallExtension">
 	<Product Id="*" Name="ShutdownOnLan" Language="1033" Version="1.0.0" Manufacturer="Jeremy Massel" UpgradeCode="755fa776-c302-4110-9be4-93578a393f09">
 		<Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
 
@@ -25,10 +25,12 @@
 	<Fragment>
 		<ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
 			<Component Id="ProductComponent">
-				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes" />
-					<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no" />
-					<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
-				</Component>
+				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes">
+					<fire:FirewallException Id="Allow" Name="ShutdownOnLan" Scope="localSubnet"/>
+				</File>
+				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no" />
+				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+			</Component>
 		</ComponentGroup>
 	</Fragment>
 </Wix>
