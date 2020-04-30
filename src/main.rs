@@ -17,6 +17,9 @@ fn main() -> windows_service::Result<()> {
     init_logging();
 
     winlog::register("ShutdownOnLan");
+    if let winlog = winlog::init("ShutdownOnLan") {
+        log::debug!("Windows Event Logger Initialized");
+    }
 
     use crate::windows_listener_service::shutdown_on_lan_service;
     return shutdown_on_lan_service::run();
