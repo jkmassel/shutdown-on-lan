@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+## Stop the process (if needed)
+launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
+
+## Start the process
+launchctl load -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
+
+exit 0
