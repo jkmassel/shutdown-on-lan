@@ -52,8 +52,8 @@ jobs:
         with:
           upload_url: ${{needs.setup.outputs.uploadurl}}
           asset_path: build/windows/shutdown-on-lan.msi
-          asset_name: shutdown-on-lan-windows.zip
-          asset_content_type: application/zip
+          asset_name: shutdown-on-lan-windows.msi
+          asset_content_type: application/x-msi
 
   mac:
     runs-on: macos-latest
