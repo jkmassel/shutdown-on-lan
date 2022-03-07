@@ -78,7 +78,7 @@ pub mod shutdown_on_lan_service {
             wait_hint: Duration::default(),
         })?;
 
-        let config = AppConfiguration::fetch();
+        let config = AppConfiguration::fetch().unwrap();
 
         log::debug!("About to start listener service");
         thread::spawn(move || {

@@ -57,19 +57,22 @@ fn main() -> windows_service::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn main() {
+use crate::configuration::ConfigurationError;
+
+#[cfg(not(windows))]
+fn main() -> Result<(), ConfigurationError> {
     init_logging();
 
     let args = AppArguments::from_args();
 
     match args.command {
         None => {
-            AppConfiguration::validate();
-            let config = AppConfiguration::fetch();
+            AppConfiguration::validate()?;
+            let config = AppConfiguration::fetch()?;
             listener_service::run(&config);
         },
         Some(Command::Set { port, ip_addresses, secret }) =>  {
-            let mut config = AppConfiguration::fetch();
+            let mut config = AppConfiguration::fetch()?;
 
             if port.is_none() && ip_addresses.is_none() && secret.is_none() {
                 println!("You must specify an option to set. Use --help to list options.");
@@ -91,12 +94,12 @@ fn main() {
                 config.secret = secret;
             }
 
-            config.save();
+            config.save()?;
 
             println!("Configuration Changes Saved.");
         },
         Some(Command::Get { port, ip_addresses }) => {
-            let config = AppConfiguration::fetch();
+            let config = AppConfiguration::fetch()?;
 
             if port {
                 println!("Current Port: {:?}", config.port_number);
@@ -107,6 +110,8 @@ fn main() {
             }
         }
     }
+
+    Ok(())
 }
 
 fn init_logging() {
