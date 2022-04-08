@@ -15,12 +15,16 @@ itertools = "0.8.2"
 system_shutdown = "3.0.0"
 serde = { version = "1.0", features = ["derive"] }
 structopt = { version = "0.3", default-features = false }
+anyhow = "1.0"
 thiserror = "1"
 exitcode = "1.1.2"
+memoize = "0.3.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.7" }
-windows-service = "0.2.0"
+windows-service = "0.3.1"
+win_etw_macros = "0.1.*"
+win_etw_provider = "0.1.*"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 serde_ini = "0.2.0"
@@ -30,7 +34,3 @@ plist = "1"
 dirs = "2.0"
 whoami = "1"
 serde_ini = "0.2.0"
-
-[[bin]]
-name = "installer"
-path = "src/installer.rs"

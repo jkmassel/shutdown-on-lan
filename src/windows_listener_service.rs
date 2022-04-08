@@ -1,13 +1,10 @@
-
 #[cfg(windows)]
 pub mod shutdown_on_lan_service {
     extern crate windows_service;
 
     use crate::{configuration::AppConfiguration, listener_service};
 
-    use std::{
-        ffi::OsString, sync::mpsc, thread, time::Duration,
-    };
+    use std::{ffi::OsString, sync::mpsc, thread, time::Duration};
 
     use windows_service::{
         define_windows_service,
@@ -76,6 +73,7 @@ pub mod shutdown_on_lan_service {
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
+            process_id: None,
         })?;
 
         let config = AppConfiguration::fetch().unwrap();
@@ -111,8 +109,72 @@ pub mod shutdown_on_lan_service {
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
+            process_id: None,
         })?;
 
         Ok(())
     }
+
+    #[cfg(target_os = "windows")]
+    pub fn install() -> anyhow::Result<()> {
+        use windows_service::{
+            service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType},
+            service_manager::{ServiceManager, ServiceManagerAccess},
+        };
+
+        let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+        let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
+
+        if let Ok(ret) = uninstall() {
+            println!("Uninstalled old version");
+        }
+
+        let service_binary_path = ::std::env::current_exe()
+            .unwrap()
+            .with_file_name("shutdown-on-lan.exe");
+
+        println!("Binary Service Path: {:?}", service_binary_path);
+
+        let service_info = ServiceInfo {
+            name: OsString::from(SERVICE_NAME),
+            display_name: OsString::from("Shutdown on LAN"),
+            service_type: SERVICE_TYPE,
+            start_type: ServiceStartType::AutoStart,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: service_binary_path,
+            launch_arguments: vec![],
+            dependencies: vec![],
+            account_name: None, // run as System
+            account_password: None,
+        };
+
+        let service = service_manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+        service.set_description("Shuts down the computer in response to an external signal.")?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn uninstall() -> Result<()> {
+        use windows_service::{
+            service::{ServiceAccess},
+            service_manager::{ServiceManager, ServiceManagerAccess},
+        };
+
+        let manager_access = ServiceManagerAccess::CONNECT;
+        let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
+
+        let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+        let service = service_manager.open_service("shutdown_on_lan", service_access)?;
+
+        let service_status = service.query_status()?;
+        if service_status.current_state != ServiceState::Stopped {
+            service.stop()?;
+            // Wait for service to stop
+            thread::sleep(Duration::from_secs(1));
+        }
+
+        service.delete()?;
+        Ok(())
+    }
+
 }

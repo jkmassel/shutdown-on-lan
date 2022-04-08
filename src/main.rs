@@ -1,22 +1,25 @@
+extern crate exitcode;
 extern crate log;
 extern crate simplelog;
 extern crate system_shutdown;
-extern crate exitcode;
 
 use crate::configuration::AppConfiguration;
+use anyhow::{Context, Result};
 use simplelog::*;
 use std::fs::File;
+use std::process;
 use std::vec;
 use structopt::StructOpt;
-use std::process;
-
 
 mod configuration;
 mod listener_service;
 mod windows_listener_service;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "shutdown-on-lan", about = "A tool for implementing the opposite of wake-on-LAN – the ability to remotely shut down a machine.")]
+#[structopt(
+    name = "shutdown-on-lan",
+    about = "A tool for implementing the opposite of wake-on-LAN – the ability to remotely shut down a machine."
+)]
 struct AppArguments {
     #[structopt(subcommand)]
     command: Option<Command>,
@@ -24,7 +27,7 @@ struct AppArguments {
 
 #[derive(Debug, StructOpt)]
 enum Command {
-        Get {
+    Get {
         /// Print the port number that this tool listens on (according to the local configuration file, if present)
         #[structopt(long = "port")]
         port: bool,
@@ -37,44 +40,41 @@ enum Command {
         #[structopt(long = "port")]
         port: Option<u16>,
 
-        #[structopt(long = "ip-addresses")]
-        ip_addresses: Option<String>,
+        #[structopt(long = "ip-address")]
+        ip_address: Option<String>,
 
         #[structopt(long = "secret")]
         secret: Option<String>,
-    }
+    },
+    Install {}
 }
 
-#[cfg(windows)]
-fn main() -> windows_service::Result<()> {
-    extern crate windows_service;
-
-    init_logging();
-    AppConfiguration::validate();
-
-    use crate::windows_listener_service::shutdown_on_lan_service;
-    return shutdown_on_lan_service::run();
-}
-
-#[cfg(not(windows))]
-use crate::configuration::ConfigurationError;
-
-#[cfg(not(windows))]
-fn main() -> Result<(), ConfigurationError> {
+fn main() -> Result<()> {
     init_logging();
 
     let args = AppArguments::from_args();
 
     match args.command {
         None => {
-            AppConfiguration::validate()?;
-            let config = AppConfiguration::fetch()?;
+            validate_app_configuration()?;
+            let config = get_app_configuration()?;
             listener_service::run(&config);
-        },
-        Some(Command::Set { port, ip_addresses, secret }) =>  {
-            let mut config = AppConfiguration::fetch()?;
+        }
+        Some(Command::Set {
+            port,
+            ip_address,
+            secret,
+        }) => {
+            log::debug!(
+                "Updating Configuartion: {:?},{:?},{:?}",
+                port,
+                ip_address,
+                secret
+            );
 
-            if port.is_none() && ip_addresses.is_none() && secret.is_none() {
+            let mut config = get_app_configuration()?;
+
+            if port.is_none() && ip_address.is_none() && secret.is_none() {
                 println!("You must specify an option to set. Use --help to list options.");
                 process::exit(exitcode::USAGE);
             }
@@ -84,9 +84,9 @@ fn main() -> Result<(), ConfigurationError> {
                 config.port_number = port;
             }
 
-            if let Some(ip_addresses) = ip_addresses {
-                println!("Set IP Addresses: {:?}", ip_addresses);
-                config.set_addresses(ip_addresses);
+            if let Some(ip_address) = ip_address {
+                println!("Set IP Addresses: {:?}", ip_address);
+                config.set_addresses(ip_address);
             }
 
             if let Some(secret) = secret {
@@ -94,12 +94,14 @@ fn main() -> Result<(), ConfigurationError> {
                 config.secret = secret;
             }
 
+            log::debug!("Saving Configuration");
+
             config.save()?;
 
             println!("Configuration Changes Saved.");
-        },
+        }
         Some(Command::Get { port, ip_addresses }) => {
-            let config = AppConfiguration::fetch()?;
+            let config = get_app_configuration()?;
 
             if port {
                 println!("Current Port: {:?}", config.port_number);
@@ -109,28 +111,51 @@ fn main() -> Result<(), ConfigurationError> {
                 println!("Listening IP Addresses: {:?}", config.addresses);
             }
         }
+        Some(Command::Install {}) => {
+            println!("Installing (Windows only)");
+            install()?
+        }
     }
 
     Ok(())
 }
 
+fn validate_app_configuration() -> Result<()> {
+    AppConfiguration::validate().context("Unable to validate the configuration file")
+}
+
+fn get_app_configuration() -> Result<AppConfiguration> {
+    AppConfiguration::fetch().context("Unable to read the configuration file")
+}
+
 fn init_logging() {
     let mut loggers = vec![];
 
-    match TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed) {
+    match TermLogger::new(LevelFilter::Debug, Config::default(), TerminalMode::Mixed) {
         Some(logger) => loggers.push(logger as Box<dyn SharedLogger>),
-        None => loggers.push(SimpleLogger::new(LevelFilter::Warn, Config::default())),
+        None => loggers.push(SimpleLogger::new(LevelFilter::Debug, Config::default())),
     }
 
-    if cfg!(debug_assertions) {
-        loggers.push(WriteLogger::new(
-            LevelFilter::Info,
-            Config::default(),
-            File::create("output.log").unwrap(),
-        ));
-    }
+    // if cfg!(debug_assertions) {
+    loggers.push(WriteLogger::new(
+        LevelFilter::Debug,
+        Config::default(),
+        File::create("output.log").unwrap(),
+    ));
+    // }
 
     CombinedLogger::init(loggers).unwrap();
 
     log::debug!("File Logger Initialized");
+}
+
+#[cfg(windows)]
+fn install() -> Result<()> {
+    crate::windows_listener_service::shutdown_on_lan_service::install()
+}
+
+#[cfg(not(windows))]
+fn install() -> Result<()> {
+    println!("Installation is only required on Windows");
+    Ok(())
 }

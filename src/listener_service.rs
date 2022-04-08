@@ -52,4 +52,3 @@ pub fn handle_stream(mut stream: TcpStream, secret: &str) {
         }
     }
 }
-
