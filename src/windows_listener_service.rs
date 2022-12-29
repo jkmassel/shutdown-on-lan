@@ -1,13 +1,10 @@
-
 #[cfg(windows)]
 pub mod shutdown_on_lan_service {
     extern crate windows_service;
 
-    use crate::{configuration::AppConfiguration, listener_service::listener_service};
+    use crate::{configuration::AppConfiguration, listener_service};
 
-    use std::{
-        ffi::OsString, io::Result as RustResult, path::Path, sync::mpsc, thread, time::Duration,
-    };
+    use std::{ffi::OsString, sync::mpsc, thread, time::Duration};
 
     use windows_service::{
         define_windows_service,
@@ -18,8 +15,6 @@ pub mod shutdown_on_lan_service {
         service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher, Result,
     };
-
-    use winreg::enums::*;
 
     const SERVICE_NAME: &str = "shutdown-on-lan";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -43,72 +38,6 @@ pub mod shutdown_on_lan_service {
         if let Err(_e) = run_service() {
             // Handle the error, by logging or something.
         }
-    }
-
-    // fn print_type_of<T>(_: &T) {
-    //     info!("{}", std::any::type_name::<T>())
-    // }
-
-    pub fn get_configuration() -> RustResult<AppConfiguration> {
-        const IP_ADDRESS_KEY: &str = "ip_addresses";
-        const PORT_KEY: &str = "port";
-        const SECRET_KEY: &str = "secret";
-
-        log::info!("Looking up configuration");
-
-        // Lookup Configuration
-        let hkcu = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
-        let path = Path::new("Software").join("ShutdownOnLan");
-        let (key, disposition) = hkcu.create_subkey(&path)?;
-        log::debug!("Created Subkey");
-
-        match disposition {
-            REG_CREATED_NEW_KEY => {
-                log::debug!("Created Registry Key - writing new configuration from defaults");
-
-                let configuration = AppConfiguration::default();
-
-                let addresses: Vec<String> = configuration
-                    .addresses
-                    .iter()
-                    .map(|ip| ip.to_string())
-                    .collect();
-
-                let joined_addresses = addresses.join(",");
-                key.set_value(IP_ADDRESS_KEY, &joined_addresses)?;
-
-                log::debug!("Set IP Addresses to {}", joined_addresses);
-
-                let u32_port_number = configuration.port_number as u32;
-                key.set_value(PORT_KEY, &u32_port_number)?;
-
-                log::debug!("Set Port to {}", u32_port_number);
-
-                key.set_value(SECRET_KEY, &configuration.secret)?;
-                log::debug!("Set secret to {}", configuration.secret);
-
-                return Ok(configuration);
-            }
-            REG_OPENED_EXISTING_KEY => {
-                let ips_string: String = key.get_value(IP_ADDRESS_KEY)?;
-                let ips_list: Vec<&str> = ips_string.split(",").collect();
-
-                let ip_addresses = ips_list
-                    .iter()
-                    .map(|&ip| ip.parse().ok())
-                    .flat_map(|x| x)
-                    .collect();
-
-                let port: u32 = key.get_value(PORT_KEY)?;
-                let secret: String = key.get_value(SECRET_KEY)?;
-
-                return Ok(AppConfiguration {
-                    port_number: port as u16,
-                    addresses: ip_addresses,
-                    secret,
-                });
-            }
-        };
     }
 
     pub fn run_service() -> Result<()> {
@@ -144,16 +73,10 @@ pub mod shutdown_on_lan_service {
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
+            process_id: None,
         })?;
 
-        let config = match get_configuration() {
-            Ok(configuration) => configuration,
-            Err(err) => {
-                log::error!("Configuration retrieval error: {}", err);
-                log::error!("Unable to read configuration - exiting");
-                return Ok(());
-            }
-        };
+        let config = AppConfiguration::fetch().unwrap();
 
         log::debug!("About to start listener service");
         thread::spawn(move || {
@@ -186,8 +109,72 @@ pub mod shutdown_on_lan_service {
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
+            process_id: None,
         })?;
 
         Ok(())
     }
+
+    #[cfg(target_os = "windows")]
+    pub fn install() -> anyhow::Result<()> {
+        use windows_service::{
+            service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType},
+            service_manager::{ServiceManager, ServiceManagerAccess},
+        };
+
+        let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+        let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
+
+        if let Ok(ret) = uninstall() {
+            println!("Uninstalled old version");
+        }
+
+        let service_binary_path = ::std::env::current_exe()
+            .unwrap()
+            .with_file_name("shutdown-on-lan.exe");
+
+        println!("Binary Service Path: {:?}", service_binary_path);
+
+        let service_info = ServiceInfo {
+            name: OsString::from(SERVICE_NAME),
+            display_name: OsString::from("Shutdown on LAN"),
+            service_type: SERVICE_TYPE,
+            start_type: ServiceStartType::AutoStart,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: service_binary_path,
+            launch_arguments: vec![],
+            dependencies: vec![],
+            account_name: None, // run as System
+            account_password: None,
+        };
+
+        let service = service_manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+        service.set_description("Shuts down the computer in response to an external signal.")?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn uninstall() -> Result<()> {
+        use windows_service::{
+            service::{ServiceAccess},
+            service_manager::{ServiceManager, ServiceManagerAccess},
+        };
+
+        let manager_access = ServiceManagerAccess::CONNECT;
+        let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
+
+        let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+        let service = service_manager.open_service("shutdown_on_lan", service_access)?;
+
+        let service_status = service.query_status()?;
+        if service_status.current_state != ServiceState::Stopped {
+            service.stop()?;
+            // Wait for service to stop
+            thread::sleep(Duration::from_secs(1));
+        }
+
+        service.delete()?;
+        Ok(())
+    }
+
 }
