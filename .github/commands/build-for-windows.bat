@@ -10,8 +10,6 @@ cd windows
 
 "%WIX%\bin\candle.exe" -ext WixFirewallExtension -ext WixUtilExtension Product.wxs
 "%WIX%\bin\candle.exe" -ext WixFirewallExtension -ext WixUtilExtension Bundle.wxs
-"%WIX%\bin\light.exe" -ext WixFirewallExtension -ext WixUtilExtension Product.wixobj
-
-cp Product.msi shutdown-on-lan.msi
+"%WIX%\bin\light.exe" -ext WixFirewallExtension -ext WixUtilExtension Bundle.wixobj
 
 ls
