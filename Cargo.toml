@@ -24,7 +24,7 @@ memoize = "0.3.0"
 time = "^0.3"
 
 [target.'cfg(windows)'.dependencies]
-winreg = { version = "0.7" }
+winreg = { version = "0.10" }
 windows-service = "0.3.1"
 win_etw_macros = "0.1.*"
 win_etw_provider = "0.1.*"
