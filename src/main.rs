@@ -129,22 +129,16 @@ fn get_app_configuration() -> Result<AppConfiguration> {
 }
 
 fn init_logging() {
-    let mut loggers = vec![];
-
-    match TermLogger::new(LevelFilter::Debug, Config::default(), TerminalMode::Mixed) {
-        Some(logger) => loggers.push(logger as Box<dyn SharedLogger>),
-        None => loggers.push(SimpleLogger::new(LevelFilter::Debug, Config::default())),
+    if cfg!(debug_assertions) {
+        CombinedLogger::init(vec![
+            TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
+            WriteLogger::new(LevelFilter::Info, Config::default(), File::create("output.log").unwrap()),
+        ]).unwrap();
+    } else {
+        CombinedLogger::init(vec![
+            TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
+        ]).unwrap();
     }
-
-    // if cfg!(debug_assertions) {
-    loggers.push(WriteLogger::new(
-        LevelFilter::Debug,
-        Config::default(),
-        File::create("output.log").unwrap(),
-    ));
-    // }
-
-    CombinedLogger::init(loggers).unwrap();
 
     log::debug!("File Logger Initialized");
 }
