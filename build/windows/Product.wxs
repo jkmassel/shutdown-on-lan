@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:fire="http://schemas.microsoft.com/wix/FirewallExtension">
+<Wix
+	xmlns="http://schemas.microsoft.com/wix/2006/wi"
+	xmlns:fire="http://schemas.microsoft.com/wix/FirewallExtension"
+	xmlns:util="http://schemas.microsoft.com/wix/UtilExtension"
+>
 	<Product Id="*" Name="ShutdownOnLan" Language="1033" Version="1.0.0" Manufacturer="Jeremy Massel" UpgradeCode="755fa776-c302-4110-9be4-93578a393f09">
 		<Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
 

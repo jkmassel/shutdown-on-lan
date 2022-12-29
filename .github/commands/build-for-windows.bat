@@ -8,7 +8,7 @@ echo "Build Complete – starting packaging"
 cd build
 cd windows
 
-"%WIX%\bin\candle.exe" -ext WixFirewallExtension Product.wxs
-"%WIX%\bin\light.exe" -ext WixFirewallExtension Product.wixobj
+"%WIX%\bin\candle.exe" -ext WixFirewallExtension -ext WixUtilExtension Product.wxs
+"%WIX%\bin\light.exe" -ext WixFirewallExtension -ext WixUtilExtension Product.wixobj
 
 mv Product.msi shutdown-on-lan.msi
