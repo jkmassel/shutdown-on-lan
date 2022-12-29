@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension" xmlns:bal="schemas.microsoft.com/wix/BalExtension">
 	<Bundle Version="1.0.0" UpgradeCode="755fa776-c302-4110-9be4-93578a393f09">
-		<BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.RtfLicense" />
+		<BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+		  <bal:WixStandardBootstrapperApplication 
+		    LicenseUrl=""
+		    xmlns:bal="http://schemas.microsoft.com/wix/BalExtension" />
+		</BootstrapperApplicationRef>
+
 		<Chain>
 			<PackageGroupRef Id="vcredist_vc140"/>
 			<MsiPackage SourceFile="Package.msi" />
