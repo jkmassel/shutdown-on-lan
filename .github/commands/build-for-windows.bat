@@ -1,9 +1,14 @@
 @ECHO OFF
 
 cargo build --release
-cp .\target\release\shutdown-on-lan.exe .\build\windows\shutdown-on-lan.exe
+cp target\release\shutdown-on-lan.exe build\windows\shutdown-on-lan.exe
 
-cd .\build\windows
+echo "Build Complete – starting packaging" 
 
-tools\candle.exe -ext WixFirewallExtension Product.wxs
-tools\light.exe -ext WixFirewallExtension Product.wixobj
+cd build
+cd windows
+
+"%WIX%\bin\candle.exe" -ext WixFirewallExtension Product.wxs
+"%WIX%\bin\light.exe" -ext WixFirewallExtension Product.wixobj
+
+mv Product.msi shutdown-on-lan.msi

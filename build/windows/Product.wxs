@@ -28,19 +28,6 @@
 				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes">
 					<fire:FirewallException Id="Allow" Name="ShutdownOnLan" Scope="localSubnet"/>
 				</File>
-
-				<CustomAction
-					Id='INSTALL_SERVICE'
-					Directory="INSTALLFOLDER"
-					Execute='deferred'
-					Impersonate='no'
-					ExeCommand='.\shutdown-on-lan.exe install'
-					Return='check'
-				/>
-
-				<InstallExecuteSequence>
-					<Custom Action='INSTALL_SERVICE' Before='InstallFinalize'/>
-				</InstallExecuteSequence>
 			</Component>
 		</ComponentGroup>
 	</Fragment>

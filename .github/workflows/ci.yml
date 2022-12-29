@@ -2,15 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ '*' ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Lint
         run: cargo fmt --verbose
       - name: Style
@@ -24,8 +24,19 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose -- --test-threads 1
+
+  validate-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Validate Installer
+        run: .github/commands/build-for-windows.bat
+      - uses: actions/upload-artifact@v3
+        with:
+          name: shutdown-on-lan-windows.zip
+          path: build/windows/shutdown-on-lan.msi
