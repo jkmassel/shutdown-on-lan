@@ -9,7 +9,7 @@
 
 		<Chain>
 			<PackageGroupRef Id="vcredist_vc140"/>
-			<MsiPackage SourceFile="Package.msi" />
+			<MsiPackage SourceFile="Product.msi" />
 		</Chain>
 	</Bundle>
 
