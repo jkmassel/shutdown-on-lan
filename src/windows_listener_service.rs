@@ -164,7 +164,7 @@ pub mod shutdown_on_lan_service {
         let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
 
         let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
-        let service = service_manager.open_service("shutdown_on_lan", service_access)?;
+        let service = service_manager.open_service(SERVICE_NAME, service_access)?;
 
         let service_status = service.query_status()?;
         if service_status.current_state != ServiceState::Stopped {
