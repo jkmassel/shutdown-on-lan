@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension" xmlns:bal="schemas.microsoft.com/wix/BalExtension">
+	<Bundle Version="1.0.0" UpgradeCode="755fa776-c302-4110-9be4-93578a393f09">
+		<BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+		  <bal:WixStandardBootstrapperApplication 
+		    LicenseUrl=""
+		    xmlns:bal="http://schemas.microsoft.com/wix/BalExtension" />
+		</BootstrapperApplicationRef>
+
+		<Chain>
+			<PackageGroupRef Id="vcredist_vc140"/>
+			<MsiPackage SourceFile="Product.msi" />
+		</Chain>
+	</Bundle>
+
+	<Fragment>
+	  <PackageGroup Id="vcredist_vc140">
+        <ExePackage Id="VisualCPlusPlus32Bit"
+              DisplayName="Microsoft Visual C++"
+              SourceFile="vc_redist.x86.exe"
+              Vital="yes"
+              InstallCommand="/q /ACTION=Install" />
+        <ExePackage Id="VisualCPlusPlus64Bit"
+              DisplayName="Microsoft Visual C++"
+              SourceFile="vc_redist.x64.exe"
+              Vital="yes"
+              InstallCommand="/q /ACTION=Install" />
+	  </PackageGroup>
+	</Fragment>
+</Wix>

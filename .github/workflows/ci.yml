@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo fmt --verbose
       - name: Style
@@ -25,6 +26,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -34,9 +36,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
+      - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
         run: .github/commands/build-for-windows.bat
       - uses: actions/upload-artifact@v3
         with:
           name: shutdown-on-lan-windows.zip
-          path: build/windows/shutdown-on-lan.msi
+          path: build/windows
