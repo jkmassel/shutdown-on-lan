@@ -9,7 +9,10 @@ cd build
 cd windows
 
 "%WIX%\bin\candle.exe" -ext WixFirewallExtension -ext WixUtilExtension -ext WixBalExtension Product.wxs
+"%WIX%\bin\light.exe" -ext WixFirewallExtension -ext WixUtilExtension -ext WixBalExtension Product.wixobj
+
+ls
+
 "%WIX%\bin\candle.exe" -ext WixFirewallExtension -ext WixUtilExtension -ext WixBalExtension Bundle.wxs
 "%WIX%\bin\light.exe" -ext WixFirewallExtension -ext WixUtilExtension -ext WixBalExtension Bundle.wixobj
 
-ls
