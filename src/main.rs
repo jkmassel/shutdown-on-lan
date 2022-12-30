@@ -145,6 +145,8 @@ fn init_logging() {
 
 #[cfg(windows)]
 fn install() -> Result<()> {
+    AppConfiguration::create_configuration_storage_if_not_exists()?;
+    AppConfiguration::create_configuration_if_not_exists()?;
     crate::windows_listener_service::shutdown_on_lan_service::install()
 }
 

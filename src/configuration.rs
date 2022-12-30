@@ -287,12 +287,12 @@ impl AppConfiguration {
         Ok(())
     }
 
-    fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
+    pub fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
         Registry::with_default_root_key()?;
         Ok(())
     }
 
-    fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
+    pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::debug!("Checking whether configuration needs to be created");
 
         if let existing_configuration = Self::fetch() {
