@@ -13,6 +13,7 @@ target
 
 # Log File
 output.log
+shutdown-on-lan.log
 
 # Docker Cargo Cache
 .cargo

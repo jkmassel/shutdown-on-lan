@@ -131,8 +131,8 @@ fn get_app_configuration() -> Result<AppConfiguration> {
 fn init_logging() {
     if cfg!(debug_assertions) {
         CombinedLogger::init(vec![
-            TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-            WriteLogger::new(LevelFilter::Info, Config::default(), File::create("output.log").unwrap()),
+            TermLogger::new(LevelFilter::Debug, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
+            WriteLogger::new(LevelFilter::Debug, Config::default(), File::create("shutdown-on-lan.log").unwrap()),
         ]).unwrap();
     } else {
         CombinedLogger::init(vec![

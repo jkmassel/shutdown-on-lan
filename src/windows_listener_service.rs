@@ -78,7 +78,7 @@ pub mod shutdown_on_lan_service {
 
         let config = AppConfiguration::fetch().unwrap();
 
-        log::debug!("About to start listener service");
+        log::info!("Forking listener service thread");
         thread::spawn(move || {
             listener_service::run(&config);
         });
