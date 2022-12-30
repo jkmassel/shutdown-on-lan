@@ -12,7 +12,40 @@
 	
 		<Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
 		<Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+
+		<Chain>
+			<PackageGroupRef Id="vcredist_vc140"/>
+		</Chain>
 	</Product>
+
+	<Fragment>
+	  <!-- vcredist 2015 x86 -->
+	  <util:ProductSearch
+	      Id="VCREDIST_140_x86"
+	      UpgradeCode="65E5BD06-6392-3027-8C26-853107D3CF1A"
+	      Result="version"
+	      Variable="VCREDIST_140_x86"/>
+	  <PackageGroup Id="vcredist_vc140">
+	    <ExePackage
+	        Id="vc140"
+	        Cache="yes"
+	        PerMachine="yes"
+	        Permanent="yes"
+	        Vital="yes"
+	        Compressed="no"
+	        DownloadUrl="http://go.microsoft.com/fwlink/?LinkID=615459"
+	        Name="vcredist_vc140"
+	        InstallCommand="/quiet /norestart"
+	        DetectCondition="(VCREIST_140_x86 &gt;= v14.0.24215)">
+	      <RemotePayload
+	          Description="Microsoft Visual C++ 2015 Redistributable (x86) - 14.0.24215"
+	          ProductName="Microsoft Visual C++ 2015 Redistributable (x86) - 14.0.24215"
+	          Size="14456872"
+	          Version="14.0.24215.1"
+	          Hash="72211BD2E7DFC91EA7C8FAC549C49C0543BA791B" />
+	    </ExePackage>
+	  </PackageGroup>
+	</Fragment>
 
 	<Fragment>
 		<Directory Id="TARGETDIR" Name="SourceDir">
