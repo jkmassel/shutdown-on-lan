@@ -46,7 +46,10 @@ enum Command {
         #[structopt(long = "secret")]
         secret: Option<String>,
     },
-    Install {}
+    /// Perform Installation Tasks (only used on Windows)
+    Install {},
+    /// Run the tool in standalone mode (mostly only useful on Windows, the same as running with no arguments on other platforms)
+    Run {}
 }
 
 fn main() -> Result<()> {
@@ -56,9 +59,7 @@ fn main() -> Result<()> {
 
     match args.command {
         None => {
-            validate_app_configuration()?;
-            let config = get_app_configuration()?;
-            listener_service::run(&config);
+            run()?
         }
         Some(Command::Set {
             port,
@@ -115,6 +116,10 @@ fn main() -> Result<()> {
             println!("Installing (Windows only)");
             install()?
         }
+        Some(Command::Run {}) => {
+            println!("Running in standalone mode");
+            run_standalone()?
+        }
     }
 
     Ok(())
@@ -153,5 +158,23 @@ fn install() -> Result<()> {
 #[cfg(not(windows))]
 fn install() -> Result<()> {
     println!("Installation is only required on Windows");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run() -> Result<()> {
+    crate::windows_listener_service::shutdown_on_lan_service::run()
+}
+
+#[cfg(not(windows))]
+fn run() -> Result<()> {
+    run_standalone()
+}
+
+fn run_standalone() -> Result<()> {
+    validate_app_configuration()?;
+    let config = get_app_configuration()?;
+    listener_service::run(&config);
+
     Ok(())
 }
