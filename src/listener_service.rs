@@ -7,6 +7,7 @@ use crate::configuration::AppConfiguration;
 
 pub fn run(configuration: &AppConfiguration) {
     let listener = TcpListener::bind(configuration).unwrap();
+    log::debug!("Listening on {:?}", configuration.port_number);
 
     for stream in listener.incoming() {
         match stream {

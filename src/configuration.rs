@@ -293,17 +293,18 @@ impl AppConfiguration {
     }
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
-        log::debug!("Checking whether configuration needs to be created");
+        log::info!("Checking whether configuration needs to be created");
 
-        if let existing_configuration = Self::fetch() {
-            log::debug!("Found existing configuration – skipping creation");
+        if let Ok(existing_configuration) = Self::fetch() {
+            log::info!("Found existing configuration – skipping creation");
+            log::info!("Configuration: {:?}", existing_configuration);
             return Ok(())
         }
 
-        log::debug!("Writing default configuration to registry");
+        log::info!("Writing default configuration to registry");
         let configuration = AppConfiguration::default();
         configuration.save()?;
-        log::debug!("Default configuration written to registry");
+        log::info!("Default configuration written to registry");
 
         Ok(())
     }
@@ -383,10 +384,10 @@ impl Registry {
 
         match disposition {
             RegDisposition::REG_CREATED_NEW_KEY => {
-                log::debug!("Created New Registry Key");
+                log::info!("Created New Registry Key");
             }
             RegDisposition::REG_OPENED_EXISTING_KEY => {
-                log::debug!("Using Existing Registry Key");
+                log::info!("Using Existing Registry Key");
             }
         }
 
@@ -481,7 +482,6 @@ impl Plist {
             .write(true)
             .open(path)
             .map_err(|_e| {
-                log::debug!("Underlying error: {:?}", _e);
                 ConfigurationError::ConfigurationFileUnwritable
             })?;
 

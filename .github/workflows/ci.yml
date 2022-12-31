@@ -41,5 +41,5 @@ jobs:
         run: .github/commands/build-for-windows.bat
       - uses: actions/upload-artifact@v3
         with:
-          name: shutdown-on-lan-windows.zip
+          name: shutdown-on-lan-windows
           path: build/windows
