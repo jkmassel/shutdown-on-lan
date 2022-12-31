@@ -6,6 +6,8 @@ pub mod shutdown_on_lan_service {
 
     use std::{ffi::OsString, sync::mpsc, thread, time::Duration};
 
+    use anyhow::anyhow;
+
     use windows_service::{
         define_windows_service,
         service::{
@@ -19,10 +21,11 @@ pub mod shutdown_on_lan_service {
     const SERVICE_NAME: &str = "shutdown-on-lan";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
-    pub fn run() -> Result<()> {
+    pub fn run() -> anyhow::Result<()> {
         // Register generated `ffi_service_main` with the system and start the service, blocking
         // this thread until the service is stopped.
-        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(|error| anyhow!("Unable to start service: {}", error))
+
     }
 
     // Generate the windows service boilerplate.
