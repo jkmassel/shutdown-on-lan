@@ -377,8 +377,7 @@ impl Registry {
     }
 
     fn with_root_key(path: PathBuf) -> Result<Registry, ConfigurationError> {
-        use winreg::enums::HKEY_LOCAL_MACHINE;
-        let (key, disposition) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        let (key, disposition) = RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
             .create_subkey(&path)
             .expect("Failed to read app configuration");
 
