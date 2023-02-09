@@ -326,13 +326,11 @@ impl ToSocketAddrs for AppConfiguration {
     fn to_socket_addrs(&self) -> std::io::Result<vec::IntoIter<SocketAddr>> {
         let mut addresses: Vec<SocketAddr> = Vec::new();
 
-        log::info!("Read configuration with addresses: {:?}", self.addresses);
+        log::info!("Read configuration with port number: {:?}", self.port_number);
 
-        for ip in self.addresses.clone() {
-            addresses.push(SocketAddr::from((ip, self.port_number)));
-        }
+        let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
-        log::info!("Translated configuration into: {:?}", addresses);
+        addresses.push(SocketAddr::from((address, self.port_number)));
 
         let ret = addresses.into_iter();
         Ok(ret)
