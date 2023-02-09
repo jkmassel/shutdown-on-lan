@@ -12,7 +12,7 @@ use std::vec;
 use thiserror::Error;
 
 #[cfg(not(windows))]
-use std::io::{prelude::*};
+use std::io::prelude::*;
 
 #[cfg(windows)]
 use winreg::RegKey;
@@ -47,22 +47,10 @@ impl AppConfiguration {
         Ok(())
     }
 
-    pub fn set_address(&mut self, string: String) {
-        self.set_addresses(string)
-    }
-
     pub fn set_addresses(&mut self, string: String) {
         let ips_list: Vec<&str> = string.split(',').collect();
 
         self.addresses = ips_list.iter().filter_map(|&ip| ip.parse().ok()).collect();
-    }
-
-    pub fn set_port_number(&mut self, port: u16) {
-        self.port_number = port
-    }
-
-    pub fn set_secret(&mut self, secret: String) {
-        self.secret = secret
     }
 }
 
@@ -80,17 +68,6 @@ impl AppConfiguration {
         let path = PathBuf::from(Self::configuration_file_path());
         log::debug!("Writing configuration to {:?}", path);
         Plist::write_configuration(self, path)
-    }
-
-    pub fn delete(&self) -> Result<(), ConfigurationError> {
-        let file_path = Self::configuration_file_path();
-        let path = Path::new(&file_path);
-
-        if path.exists() && path.is_file() {
-            std::fs::remove_file(&file_path)?;
-        }
-
-        Ok(())
     }
 
     fn configuration_storage_path() -> String {
@@ -187,13 +164,14 @@ impl AppConfiguration {
 
     pub fn save(&self) -> Result<(), ConfigurationError> {
         extern crate serde_ini;
-        let string = serde_ini::to_string(self).map_err(|err| ConfigurationError::InvalidConfiguration)?;
+        let string =
+            serde_ini::to_string(self).map_err(|err| ConfigurationError::InvalidConfiguration)?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         std::fs::write(&path, string).map_err(|error| {
             ConfigurationError::ConfigurationStorageUnwritable {
                 source: error,
-                path: path.into_os_string().into_string().unwrap()
+                path: path.into_os_string().into_string().unwrap(),
             }
         })
     }
@@ -298,7 +276,7 @@ impl AppConfiguration {
         if let Ok(existing_configuration) = Self::fetch() {
             log::info!("Found existing configuration – skipping creation");
             log::info!("Configuration: {:?}", existing_configuration);
-            return Ok(())
+            return Ok(());
         }
 
         log::info!("Writing default configuration to registry");
@@ -452,8 +430,8 @@ struct Plist {}
 #[cfg(target_os = "macos")]
 impl Plist {
     pub fn read_configuration(path: &Path) -> Result<AppConfiguration, ConfigurationError> {
-        let file = std::fs::File::open(path)
-            .map_err(|error| ConfigurationError::MissingConfigurationFile(error))?;
+        let file =
+            std::fs::File::open(path).map_err(ConfigurationError::MissingConfigurationFile)?;
 
         let mut reader = std::io::BufReader::new(file);
         let mut bytes = Vec::new();
@@ -478,9 +456,7 @@ impl Plist {
         let mut file_handle = std::fs::File::options()
             .write(true)
             .open(path)
-            .map_err(|_e| {
-                ConfigurationError::ConfigurationFileUnwritable
-            })?;
+            .map_err(|_e| ConfigurationError::ConfigurationFileUnwritable)?;
 
         let mut buf = std::io::BufWriter::new(Vec::new());
         plist::to_writer_xml(&mut buf, &configuration)
@@ -529,51 +505,3 @@ pub enum ConfigurationError {
     // #[error("Unable to write configuration – it is not valid")]
     // ConfigurationSerializationError,
 }
-
-// mod tests {
-//     use super::*;
-
-//     fn delete_existing_configuration_before_starting() {
-//         let config = AppConfiguration::default();
-//         config.save().unwrap();
-//     }
-
-//     #[test]
-//     fn test_that_configuration_is_created() {
-//         delete_existing_configuration_before_starting();
-//         assert_eq!(
-//             AppConfiguration::fetch().unwrap(),
-//             AppConfiguration::default()
-//         );
-//     }
-
-//     #[test]
-//     fn test_that_set_ip_address_works() {
-//         delete_existing_configuration_before_starting();
-
-//         let mut default = AppConfiguration::fetch().unwrap();
-//         default.set_address("10.0.1.1".to_string());
-//         default.save().unwrap();
-
-//         assert_eq!(
-//             "10.0.1.1",
-//             AppConfiguration::fetch()
-//                 .unwrap()
-//                 .addresses
-//                 .first()
-//                 .unwrap()
-//                 .to_string()
-//         );
-//     }
-
-//     #[test]
-//     fn test_that_set_port_works() {
-//         delete_existing_configuration_before_starting();
-
-//         let mut default = AppConfiguration::fetch().unwrap();
-//         default.set_port_number(1234);
-//         default.save().unwrap();
-
-//         assert_eq!(1234, AppConfiguration::fetch().unwrap().port_number);
-//     }
-// }

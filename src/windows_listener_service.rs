@@ -24,8 +24,8 @@ pub mod shutdown_on_lan_service {
     pub fn run() -> anyhow::Result<()> {
         // Register generated `ffi_service_main` with the system and start the service, blocking
         // this thread until the service is stopped.
-        service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(|error| anyhow!("Unable to start service: {}", error))
-
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+            .map_err(|error| anyhow!("Unable to start service: {}", error))
     }
 
     // Generate the windows service boilerplate.
@@ -151,7 +151,8 @@ pub mod shutdown_on_lan_service {
             account_password: None,
         };
 
-        let service = service_manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+        let service =
+            service_manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
         service.set_description("Shuts down the computer in response to an external signal.")?;
         Ok(())
     }
@@ -159,14 +160,15 @@ pub mod shutdown_on_lan_service {
     #[cfg(target_os = "windows")]
     fn uninstall() -> Result<()> {
         use windows_service::{
-            service::{ServiceAccess},
+            service::ServiceAccess,
             service_manager::{ServiceManager, ServiceManagerAccess},
         };
 
         let manager_access = ServiceManagerAccess::CONNECT;
         let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
 
-        let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+        let service_access =
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
         let service = service_manager.open_service(SERVICE_NAME, service_access)?;
 
         let service_status = service.query_status()?;
@@ -179,5 +181,4 @@ pub mod shutdown_on_lan_service {
         service.delete()?;
         Ok(())
     }
-
 }

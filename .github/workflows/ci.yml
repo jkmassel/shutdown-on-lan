@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: Swatinem/rust-cache@v2
       - name: Lint
-        run: cargo fmt --verbose
+        run: cargo fmt --verbose && git status --porcelain
       - name: Style
         run: rustup component add clippy && cargo clippy
 
