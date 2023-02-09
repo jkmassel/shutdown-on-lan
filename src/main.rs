@@ -49,7 +49,7 @@ enum Command {
     /// Perform Installation Tasks (only used on Windows)
     Install {},
     /// Run the tool in standalone mode (mostly only useful on Windows, the same as running with no arguments on other platforms)
-    Run {}
+    Run {},
 }
 
 fn main() -> Result<()> {
@@ -58,9 +58,7 @@ fn main() -> Result<()> {
     let args = AppArguments::from_args();
 
     match args.command {
-        None => {
-            run()?
-        }
+        None => run()?,
         Some(Command::Set {
             port,
             ip_address,
@@ -81,17 +79,17 @@ fn main() -> Result<()> {
             }
 
             if let Some(port) = port {
-                println!("Set port {:?}", port);
+                println!("Set port {port:?}");
                 config.port_number = port;
             }
 
             if let Some(ip_address) = ip_address {
-                println!("Set IP Addresses: {:?}", ip_address);
+                println!("Set IP Addresses: {ip_address:?}");
                 config.set_addresses(ip_address);
             }
 
             if let Some(secret) = secret {
-                println!("Set Secret: {:?}", secret);
+                println!("Set Secret: {secret:?}");
                 config.secret = secret;
             }
 
@@ -136,13 +134,27 @@ fn get_app_configuration() -> Result<AppConfiguration> {
 fn init_logging() {
     if cfg!(debug_assertions) {
         CombinedLogger::init(vec![
-            TermLogger::new(LevelFilter::Debug, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-            WriteLogger::new(LevelFilter::Debug, Config::default(), File::create("shutdown-on-lan.log").unwrap()),
-        ]).unwrap();
+            TermLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                TerminalMode::Mixed,
+                ColorChoice::Auto,
+            ),
+            WriteLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                File::create("shutdown-on-lan.log").unwrap(),
+            ),
+        ])
+        .unwrap();
     } else {
-        CombinedLogger::init(vec![
-            TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-        ]).unwrap();
+        CombinedLogger::init(vec![TermLogger::new(
+            LevelFilter::Info,
+            Config::default(),
+            TerminalMode::Mixed,
+            ColorChoice::Auto,
+        )])
+        .unwrap();
     }
 
     log::debug!("File Logger Initialized");
