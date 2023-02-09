@@ -12,6 +12,13 @@ pub fn run(configuration: &AppConfiguration) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let interface_ip = stream.local_addr().unwrap().ip();
+                log::debug!("IP: {:?}", interface_ip);
+
+                if !configuration.addresses.contains(&interface_ip) {
+                    log::debug!("Received a shutdown signal on {:?}, but the configuration only allows them from {:?} – ignoring", interface_ip, configuration.addresses);
+                }
+
                 let secret = configuration.secret.clone();
 
                 thread::spawn(move || {
