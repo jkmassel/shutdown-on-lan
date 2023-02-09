@@ -166,7 +166,7 @@ impl AppConfiguration {
     pub fn save(&self) -> Result<(), ConfigurationError> {
         extern crate serde_ini;
         let string =
-            serde_ini::to_string(self).map_err(|err| ConfigurationError::InvalidConfiguration)?;
+            serde_ini::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         std::fs::write(&path, string).map_err(|error| {
