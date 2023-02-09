@@ -12,7 +12,8 @@ use std::vec;
 use thiserror::Error;
 
 #[cfg(not(windows))]
-use std::io::prelude::*;
+use std::io::Read;
+use std::io::Write;
 
 #[cfg(windows)]
 use winreg::RegKey;
