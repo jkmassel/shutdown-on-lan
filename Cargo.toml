@@ -9,7 +9,7 @@ default-run = "shutdown-on-lan"
 
 [dependencies]
 log = "0.4.8"
-simplelog = "^0.12.0"
+simplelog = "^0.12.1"
 systemstat = "0.2.3"
 itertools = "0.10.5"
 system_shutdown = "4.0.1"
