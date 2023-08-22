@@ -12,24 +12,22 @@
 	
 		<Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
 		<Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
-	</Product>
 
-	<Fragment>
 		<Directory Id="TARGETDIR" Name="SourceDir">
 			<Directory Id="ProgramFilesFolder">
 				<Directory Id="INSTALLFOLDER" Name="ShutdownOnLan" />
 			</Directory>
 		</Directory>
-	</Fragment>
+	</Product>
 
 	<Fragment>
 		<ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-			<Component Id="ProductBinary" guid="{c312dd3b-8f92-42be-b086-d92ef90921b2}">
+			<Component Id="ProductBinary">
 				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes" />
 			</Component>
-			<Component Id="ProductService" guid="{9f40d07f-6706-417f-9df3-e15e91fe4548}">
-				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no" />
-				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+			<Component Id="ProductService" Guid="{27DC4EC8-CCC7-4DEF-BA31-00312630F3D3}">
+				<ServiceInstall Id="ServiceInstaller" LoadOrderGroup="NetworkProvider" Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="Shutdown On LAN" Description="Shuts down the computer in response to an external signal." Start="auto"  ErrorControl="normal" Interactive="no" />
+				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" 	/>
 			</Component>
 		</ComponentGroup>
 	</Fragment>
