@@ -24,10 +24,10 @@
 
 	<Fragment>
 		<ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-			<Component Id="ProductBinary">
+			<Component Id="ProductBinary" guid="{c312dd3b-8f92-42be-b086-d92ef90921b2}">
 				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes" />
 			</Component>
-			<Component Id="ProductService">
+			<Component Id="ProductService" guid="{9f40d07f-6706-417f-9df3-e15e91fe4548}">
 				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no" />
 				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
 			</Component>
