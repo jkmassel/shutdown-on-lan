@@ -18,7 +18,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
         with:
           tag_name: ${{ github.ref }}
-          release_name: ShutdownOnLan ${{ github.ref }}
+          release_name: ${{ github.ref }}
           body: ""
           draft: true
           prerelease: false
@@ -27,23 +27,14 @@ jobs:
     runs-on: windows-latest
     needs: [setup]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Build
-        run: |
-          cargo build --release
-          cp target/release/shutdown-on-lan.exe build/windows/shutdown-on-lan.exe
-      - name: Package
-        run: |
-          cd build
-          cd windows
-          &"$Env:WIX\bin\candle.exe" -ext WixFirewallExtension Product.wxs
-          &"$Env:WIX\bin\light.exe" -ext WixFirewallExtension Product.wixobj
-          mv Product.msi shutdown-on-lan.msi
+        run: .github/commands/build-for-windows.bat
       - name: Upload Artifact
         uses: actions/upload-artifact@v1
         with:
-          name: shutdown-on-lan-windows.zip
-          path: build/windows/shutdown-on-lan.msi
+          name: shutdown-on-lan-windows-installer.exe
+          path: build/windows/Bundle.exe
       - name: Attach Artifact to Release
         id: upload-windows-release-asset 
         uses: actions/upload-release-asset@v1
@@ -51,9 +42,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/windows/shutdown-on-lan.msi
-          asset_name: shutdown-on-lan-windows.zip
-          asset_content_type: application/zip
+          asset_path: build/windows/Bundle.exe
+          asset_name: shutdown-on-lan-windows-installer.exe
+          asset_content_type: application/octet-stream
 
   mac:
     runs-on: macos-latest
@@ -66,7 +57,7 @@ jobs:
           echo $UPLOAD_URL
           echo "Foo"
           echo ${{needs.setup.outputs.uploadurl}}
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Build
         run: |
           cargo build --release
