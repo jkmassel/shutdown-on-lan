@@ -46,8 +46,6 @@ enum Command {
         #[structopt(long = "secret")]
         secret: Option<String>,
     },
-    /// Perform Installation Tasks (only used on Windows)
-    Install {},
     /// Run the tool in standalone mode (mostly only useful on Windows, the same as running with no arguments on other platforms)
     Run {},
 }
@@ -110,10 +108,6 @@ fn main() -> Result<()> {
                 println!("Listening IP Addresses: {:?}", config.addresses);
             }
         }
-        Some(Command::Install {}) => {
-            println!("Installing (Windows only)");
-            install()?
-        }
         Some(Command::Run {}) => {
             println!("Running in standalone mode");
             run_standalone()?
@@ -158,19 +152,6 @@ fn init_logging() {
     }
 
     log::debug!("File Logger Initialized");
-}
-
-#[cfg(windows)]
-fn install() -> Result<()> {
-    AppConfiguration::create_configuration_storage_if_not_exists()?;
-    AppConfiguration::create_configuration_if_not_exists()?;
-    crate::windows_listener_service::shutdown_on_lan_service::install()
-}
-
-#[cfg(not(windows))]
-fn install() -> Result<()> {
-    println!("Installation is only required on Windows");
-    Ok(())
 }
 
 #[cfg(windows)]
