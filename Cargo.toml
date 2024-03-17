@@ -25,7 +25,7 @@ time = "^0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.10" }
-windows-service = "0.5.0"
+windows-service = "0.6.0"
 win_etw_macros = "0.1.*"
 win_etw_provider = "0.1.*"
 
