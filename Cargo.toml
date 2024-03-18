@@ -18,7 +18,7 @@ structopt = { version = "0.3", default-features = false }
 anyhow = "1.0"
 thiserror = "1"
 exitcode = "1.1.2"
-memoize = "0.4.0"
+memoize = "0.4.2"
 
 # Fix security warning
 time = "^0.3"
