@@ -28,8 +28,9 @@
 				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes">
 					<fire:FirewallException Id="Allow" Name="ShutdownOnLan" Scope="localSubnet"/>
 				</File>
+				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no" />
+				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
 			</Component>
 		</ComponentGroup>
 	</Fragment>
 </Wix>
-
