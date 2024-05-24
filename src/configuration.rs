@@ -12,7 +12,8 @@ use std::vec;
 use thiserror::Error;
 
 #[cfg(not(windows))]
-use std::io::prelude::*;
+use std::io::Read;
+use std::io::Write;
 
 #[cfg(windows)]
 use winreg::RegKey;
@@ -165,7 +166,7 @@ impl AppConfiguration {
     pub fn save(&self) -> Result<(), ConfigurationError> {
         extern crate serde_ini;
         let string =
-            serde_ini::to_string(self).map_err(|err| ConfigurationError::InvalidConfiguration)?;
+            serde_ini::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         std::fs::write(&path, string).map_err(|error| {
@@ -304,7 +305,10 @@ impl ToSocketAddrs for AppConfiguration {
     fn to_socket_addrs(&self) -> std::io::Result<vec::IntoIter<SocketAddr>> {
         let mut addresses: Vec<SocketAddr> = Vec::new();
 
-        log::info!("Read configuration with port number: {:?}", self.port_number);
+        log::info!(
+            "Read configuration with port number: {:?}",
+            self.port_number
+        );
 
         let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 

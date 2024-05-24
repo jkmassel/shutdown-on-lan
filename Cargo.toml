@@ -9,23 +9,23 @@ default-run = "shutdown-on-lan"
 
 [dependencies]
 log = "0.4.8"
-simplelog = "^0.12.0"
+simplelog = "^0.12.2"
 systemstat = "0.2.3"
-itertools = "0.10.5"
+itertools = "0.13.0"
 system_shutdown = "4.0.1"
 serde = { version = "1.0", features = ["derive"] }
 structopt = { version = "0.3", default-features = false }
 anyhow = "1.0"
 thiserror = "1"
 exitcode = "1.1.2"
-memoize = "0.4.0"
+memoize = "0.4.2"
 
 # Fix security warning
 time = "^0.3"
 
 [target.'cfg(windows)'.dependencies]
-winreg = { version = "0.10" }
-windows-service = "0.5.0"
+winreg = { version = "0.52" }
+windows-service = "0.6.0"
 win_etw_macros = "0.1.*"
 win_etw_provider = "0.1.*"
 
