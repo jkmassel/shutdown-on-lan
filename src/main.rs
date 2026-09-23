@@ -35,6 +35,10 @@ enum Command {
         /// Print the IP address(es) that this tool listens on (according to the local configuration file, if present)
         #[structopt(long = "ip-addresses")]
         ip_addresses: bool,
+
+        /// Print the client IP address(es) allowed to connect (according to the local configuration file, if present)
+        #[structopt(long = "allowed-sources")]
+        allowed_sources: bool,
     },
     Set {
         #[structopt(long = "port")]
@@ -45,6 +49,10 @@ enum Command {
 
         #[structopt(long = "secret")]
         secret: Option<String>,
+
+        /// A comma-separated list of client IP addresses allowed to connect. Pass an empty string to allow any client.
+        #[structopt(long = "allowed-sources")]
+        allowed_sources: Option<String>,
     },
     /// Run the tool in standalone mode (mostly only useful on Windows, the same as running with no arguments on other platforms)
     Run {},
@@ -61,10 +69,20 @@ fn main() -> Result<()> {
             port,
             ip_address,
             secret,
+            allowed_sources,
         }) => {
-            log::debug!("Updating Configuration: {:?},{:?}", port, ip_address);
+            log::debug!(
+                "Updating Configuration: {:?},{:?},{:?}",
+                port,
+                ip_address,
+                allowed_sources
+            );
 
-            if port.is_none() && ip_address.is_none() && secret.is_none() {
+            if port.is_none()
+                && ip_address.is_none()
+                && secret.is_none()
+                && allowed_sources.is_none()
+            {
                 println!("You must specify an option to set. Use --help to list options.");
                 process::exit(exitcode::USAGE);
             }
@@ -88,13 +106,24 @@ fn main() -> Result<()> {
                 println!("Secret updated");
             }
 
+            if let Some(allowed_sources) = allowed_sources {
+                config
+                    .set_allowed_sources(&allowed_sources)
+                    .with_context(|| format!("Invalid IP address list: {allowed_sources:?}"))?;
+                println!("Set Allowed Sources: {}", describe_sources(&config));
+            }
+
             log::debug!("Saving Configuration");
 
             config.save()?;
 
             println!("Configuration Changes Saved.");
         }
-        Some(Command::Get { port, ip_addresses }) => {
+        Some(Command::Get {
+            port,
+            ip_addresses,
+            allowed_sources,
+        }) => {
             let config = get_app_configuration()?;
 
             if port {
@@ -107,6 +136,10 @@ fn main() -> Result<()> {
                     format_addresses(&config.addresses)
                 );
             }
+
+            if allowed_sources {
+                println!("Allowed Sources: {}", describe_sources(&config));
+            }
         }
         Some(Command::Run {}) => {
             println!("Running in standalone mode");
@@ -115,6 +148,14 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn describe_sources(config: &AppConfiguration) -> String {
+    if config.allowed_sources.is_empty() {
+        "any".to_string()
+    } else {
+        format_addresses(&config.allowed_sources)
+    }
 }
 
 fn get_app_configuration() -> Result<AppConfiguration> {

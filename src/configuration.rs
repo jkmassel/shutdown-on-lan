@@ -26,6 +26,11 @@ pub struct AppConfiguration {
     #[cfg_attr(target_os = "linux", serde(with = "comma_separated_addresses"))]
     pub addresses: Vec<IpAddr>,
     pub secret: String,
+    /// The client addresses allowed to connect. Empty means any client may connect.
+    // Missing from configurations written by older versions, so default to allowing any client
+    #[serde(default)]
+    #[cfg_attr(target_os = "linux", serde(with = "comma_separated_addresses"))]
+    pub allowed_sources: Vec<IpAddr>,
 }
 
 pub trait AppConfigurationStorage {
@@ -52,6 +57,12 @@ impl AppConfiguration {
         Ok(())
     }
 
+    /// Sets the allowed client addresses from a comma-separated list. An empty string allows any client.
+    pub fn set_allowed_sources(&mut self, string: &str) -> Result<(), AddrParseError> {
+        self.allowed_sources = parse_optional_addresses(string)?;
+        Ok(())
+    }
+
     pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
         if secret.is_empty() || secret.len() > MAX_SECRET_LENGTH {
             return Err(ConfigurationError::InvalidSecret);
@@ -65,10 +76,24 @@ impl AppConfiguration {
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
         self.addresses.contains(ip)
     }
+
+    /// Whether a client at `ip` is allowed to connect.
+    pub fn accepts_connections_from(&self, ip: &IpAddr) -> bool {
+        self.allowed_sources.is_empty() || self.allowed_sources.contains(ip)
+    }
 }
 
 pub fn parse_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseError> {
     string.split(',').map(|ip| ip.trim().parse()).collect()
+}
+
+/// Like `parse_addresses`, but an empty string is an empty list rather than an error.
+pub fn parse_optional_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseError> {
+    if string.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    parse_addresses(string)
 }
 
 pub fn format_addresses(addresses: &[IpAddr]) -> String {
@@ -95,7 +120,7 @@ mod comma_separated_addresses {
         deserializer: D,
     ) -> Result<Vec<IpAddr>, D::Error> {
         let string = String::deserialize(deserializer)?;
-        super::parse_addresses(&string).map_err(D::Error::custom)
+        super::parse_optional_addresses(&string).map_err(D::Error::custom)
     }
 }
 
@@ -289,6 +314,14 @@ impl AppConfiguration {
                 ConfigurationError::RegistryKeyNotReadable(ConfigurationRegistryKeys::IpAddress)
             })?,
             secret: registry.read_string(ConfigurationRegistryKeys::Secret)?,
+            allowed_sources: parse_optional_addresses(
+                &registry.read_string(ConfigurationRegistryKeys::AllowedSources)?,
+            )
+            .map_err(|_error| {
+                ConfigurationError::RegistryKeyNotReadable(
+                    ConfigurationRegistryKeys::AllowedSources,
+                )
+            })?,
         })
     }
 
@@ -305,6 +338,10 @@ impl AppConfiguration {
 
         registry.write_string(ConfigurationRegistryKeys::Secret, &self.secret)?;
         log::debug!("Set secret");
+
+        let joined_sources = format_addresses(&self.allowed_sources);
+        registry.write_string(ConfigurationRegistryKeys::AllowedSources, &joined_sources)?;
+        log::debug!("Set allowed sources to {:?}", &joined_sources);
 
         Ok(())
     }
@@ -340,6 +377,14 @@ impl AppConfiguration {
             registry.write_string(ConfigurationRegistryKeys::Secret, &defaults.secret)?;
         }
 
+        if !registry.contains::<String>(ConfigurationRegistryKeys::AllowedSources)? {
+            log::info!("Writing default allowed sources to registry");
+            registry.write_string(
+                ConfigurationRegistryKeys::AllowedSources,
+                &format_addresses(&defaults.allowed_sources),
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -350,6 +395,7 @@ impl Default for AppConfiguration {
             port_number: 53632,
             addresses: [IpAddr::from(Ipv4Addr::new(127, 0, 0, 1))].to_vec(),
             secret: "Super Secret String".to_string(),
+            allowed_sources: Vec::new(),
         }
     }
 }
@@ -361,6 +407,7 @@ impl std::fmt::Debug for AppConfiguration {
             .field("port_number", &self.port_number)
             .field("addresses", &self.addresses)
             .field("secret", &"<redacted>")
+            .field("allowed_sources", &self.allowed_sources)
             .finish()
     }
 }
@@ -395,6 +442,7 @@ pub enum ConfigurationRegistryKeys {
     IpAddress,
     Port,
     Secret,
+    AllowedSources,
 }
 
 #[cfg(windows)]
@@ -404,6 +452,7 @@ impl ConfigurationRegistryKeys {
             ConfigurationRegistryKeys::IpAddress => "ip_addresses",
             ConfigurationRegistryKeys::Port => "port",
             ConfigurationRegistryKeys::Secret => "secret",
+            ConfigurationRegistryKeys::AllowedSources => "allowed_sources",
         }
     }
 }
@@ -617,6 +666,26 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_allowed_sources_accepts_any_client() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_allowed_sources("").unwrap();
+
+        assert!(configuration.accepts_connections_from(&"10.0.1.50".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_allowed_sources_only_accepts_listed_clients() {
+        let mut configuration = AppConfiguration::default();
+        configuration
+            .set_allowed_sources("10.0.1.50, 10.0.1.51")
+            .unwrap();
+
+        assert!(configuration.accepts_connections_from(&"10.0.1.51".parse().unwrap()));
+        assert!(!configuration.accepts_connections_from(&"10.0.1.52".parse().unwrap()));
+        assert!(configuration.set_allowed_sources("10.0.1.300").is_err());
+    }
+
+    #[test]
     fn test_set_secret_enforces_length_limits() {
         let mut configuration = AppConfiguration::default();
 
@@ -662,14 +731,53 @@ mod tests {
         assert_eq!(result.unwrap(), configuration);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_plist_without_allowed_sources_accepts_any_client() {
+        let plist = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>port_number</key>
+	<integer>53632</integer>
+	<key>addresses</key>
+	<array>
+		<string>127.0.0.1</string>
+	</array>
+	<key>secret</key>
+	<string>Super Secret String</string>
+</dict>
+</plist>"#;
+
+        let configuration = AppConfiguration::try_from(plist.to_vec()).unwrap();
+        assert!(configuration.allowed_sources.is_empty());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn test_ini_round_trip() {
         let mut configuration = AppConfiguration::default();
         configuration.set_addresses("10.0.1.100,::1").unwrap();
+        configuration.set_allowed_sources("10.0.1.50").unwrap();
 
         let ini = configuration.to_ini().unwrap();
         assert!(ini.contains("addresses=10.0.1.100,::1"));
+        assert!(ini.contains("allowed_sources=10.0.1.50"));
         assert_eq!(AppConfiguration::from_ini(&ini).unwrap(), configuration);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_ini_without_allowed_sources_accepts_any_client() {
+        let configuration = AppConfiguration::default();
+
+        let ini = configuration.to_ini().unwrap();
+        assert_eq!(AppConfiguration::from_ini(&ini).unwrap(), configuration);
+
+        let legacy = "port_number=53632\naddresses=127.0.0.1\nsecret=Super Secret String\n";
+        assert!(AppConfiguration::from_ini(legacy)
+            .unwrap()
+            .allowed_sources
+            .is_empty());
     }
 }

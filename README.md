@@ -15,6 +15,11 @@ Installers are provided for Windows and macOS, which then require some configura
 ##### IP Address
 Customizing the IP address field allows you to specify which interfaces the service will accept connections on – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list. Connections arriving on any other interface are closed without being read. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
 
+##### Allowed Sources
+Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect. As with the IP address, you should use a DHCP reservation or a static address for each client.
+
+On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 10.0.1.50`. On Windows, it's the `allowed_sources` registry value.
+
 ##### Port
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
 
@@ -47,7 +52,7 @@ The service can be triggered from a remote machine by sending a string containin
 
 `echo 'Super Secret String' | nc 10.0.1.100 53632`
 
-The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the connection. Several newline-separated attempts can be sent over a single connection.
+The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the connection. Several newline-separated attempts can be sent over a single connection. After a wrong secret, further attempts from the same client address are delayed – starting at 100ms and doubling with each wrong secret, up to 5 seconds per attempt. The delay resets after 5 minutes without any attempts.
 
 #### Detecting State
 
