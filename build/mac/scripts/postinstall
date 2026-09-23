@@ -5,7 +5,7 @@ set -e
 launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || true
 
 ## Create the configuration with a random secret, unless it already exists. This also imports the
-## configuration file written by older versions, and restricts the configuration to root.
+## configuration file written by older versions.
 /Library/Services/shutdownonlan init
 
 ## Start the process

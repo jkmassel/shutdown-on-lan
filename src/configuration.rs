@@ -3,7 +3,6 @@ use std::net::{AddrParseError, IpAddr, Ipv4Addr};
 use std::net::{SocketAddr, ToSocketAddrs};
 #[cfg(not(windows))]
 use std::path::Path;
-#[cfg(not(target_os = "macos"))]
 use std::path::PathBuf;
 use std::vec;
 use thiserror::Error;
@@ -75,10 +74,7 @@ impl AppConfiguration {
     }
 
     pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
-        if secret.is_empty() || secret.len() > MAX_SECRET_LENGTH {
-            return Err(ConfigurationError::InvalidSecret);
-        }
-
+        validate_secret(&secret)?;
         self.secret = secret;
         Ok(())
     }
@@ -92,6 +88,14 @@ impl AppConfiguration {
     pub fn accepts_connections_from(&self, ip: &IpAddr) -> bool {
         self.allowed_sources.is_empty() || self.allowed_sources.contains(ip)
     }
+}
+
+fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
+    if secret.is_empty() || secret.len() > MAX_SECRET_LENGTH {
+        return Err(ConfigurationError::InvalidSecret);
+    }
+
+    Ok(())
 }
 
 pub fn parse_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseError> {
@@ -128,48 +132,61 @@ pub fn format_addresses(addresses: &[IpAddr]) -> String {
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::debug!("Fetching App Configuration");
-        Self::fetch_from(&Preferences::system())
+        Self::fetch_from(&Storage::system())
     }
 
     pub fn save(&self) -> Result<(), ConfigurationError> {
-        self.save_to(&Preferences::system())
+        self.save_to(&Storage::system())
     }
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::debug!("Checking whether configuration needs to be created");
-        let preferences = Preferences::system();
+        let storage = Storage::system();
 
         let legacy_file = Path::new(LEGACY_CONFIGURATION_FILE);
         if legacy_file.exists() {
-            Self::migrate_legacy_file(legacy_file, &preferences)?;
+            Self::migrate_legacy_file(legacy_file, &storage)?;
         }
 
-        Self::write_missing_defaults(&preferences)?;
-
-        // Only root can do this, and the service runs as root, so it fixes the permissions on startup
-        if let Err(error) = preferences.restrict_permissions() {
-            log::debug!("Unable to restrict the preferences file: {}", error);
-        }
-
-        Ok(())
+        Self::migrate_secret_from_preferences(&storage)?;
+        Self::write_missing_defaults(&storage)
     }
 
-    fn fetch_from(preferences: &Preferences) -> Result<AppConfiguration, ConfigurationError> {
-        Self::from_property_lists(|key| preferences.get(key))
+    fn fetch_from(storage: &Storage) -> Result<AppConfiguration, ConfigurationError> {
+        let secret = storage
+            .read_secret()?
+            .ok_or(ConfigurationError::PreferenceNotReadable(
+                PreferenceKeys::SECRET,
+            ))?;
+
+        Self::from_property_lists(|key| storage.preferences.get(key), secret)
             .map_err(ConfigurationError::PreferenceNotReadable)
     }
 
     /// Writes the values that differ from the stored ones. Fails without writing anything if one of them
     /// is managed by a configuration profile, because the change would have no effect.
-    fn save_to(&self, preferences: &Preferences) -> Result<(), ConfigurationError> {
+    fn save_to(&self, storage: &Storage) -> Result<(), ConfigurationError> {
+        let preferences = &storage.preferences;
+
         let changes: Vec<(&'static str, CFPropertyList)> = self
             .to_property_lists()
             .into_iter()
             .filter(|(key, value)| preferences.get(key).as_ref() != Some(value))
             .collect();
+        let secret_changed = storage.read_secret()?.as_deref() != Some(self.secret.as_str());
 
-        if let Some((key, _)) = changes.iter().find(|(key, _)| preferences.is_forced(key)) {
+        let managed_key = changes
+            .iter()
+            .map(|(key, _)| *key)
+            .chain(secret_changed.then_some(PreferenceKeys::SECRET))
+            .find(|key| preferences.is_forced(key));
+        if let Some(key) = managed_key {
             return Err(ConfigurationError::PreferenceIsManaged(key));
+        }
+
+        if secret_changed {
+            log::debug!("Setting secret");
+            storage.write_secret(&self.secret)?;
         }
 
         for (key, value) in &changes {
@@ -177,15 +194,21 @@ impl AppConfiguration {
             preferences.set(key, value);
         }
 
-        preferences.synchronize()
+        if changes.is_empty() {
+            Ok(())
+        } else {
+            preferences.synchronize()
+        }
     }
 
     /// Writes defaults for any values that are missing. Existing values (including those managed by a
     /// configuration profile) are never overwritten.
-    fn write_missing_defaults(preferences: &Preferences) -> Result<(), ConfigurationError> {
+    fn write_missing_defaults(storage: &Storage) -> Result<(), ConfigurationError> {
+        let defaults = AppConfiguration::default();
+        let preferences = &storage.preferences;
         let mut changed = false;
 
-        for (key, value) in AppConfiguration::default().to_property_lists() {
+        for (key, value) in defaults.to_property_lists() {
             if preferences.get(key).is_none() {
                 log::info!("Writing default {} to preferences", key);
                 preferences.set(key, &value);
@@ -197,17 +220,23 @@ impl AppConfiguration {
             preferences.synchronize()?;
         }
 
+        if storage.read_secret()?.is_none() {
+            log::info!(
+                "Writing a random secret to {}",
+                storage.secret_file.display()
+            );
+            storage.write_secret(&defaults.secret)?;
+        }
+
         Ok(())
     }
 
     /// Imports the plist written by versions before configuration moved to `CFPreferences`, then deletes
     /// it so it isn't imported again. Only the system-wide file is imported – files under users' home
     /// directories were written by running the CLI without `sudo`, and the service never read them.
-    fn migrate_legacy_file(
-        path: &Path,
-        preferences: &Preferences,
-    ) -> Result<(), ConfigurationError> {
+    fn migrate_legacy_file(path: &Path, storage: &Storage) -> Result<(), ConfigurationError> {
         log::info!("Migrating configuration from {}", path.display());
+        let preferences = &storage.preferences;
 
         let bytes = std::fs::read(path).map_err(ConfigurationError::MissingConfigurationFile)?;
         let dictionary = core_foundation::propertylist::create_with_data(
@@ -220,12 +249,17 @@ impl AppConfiguration {
         })
         .ok_or(ConfigurationError::CorruptConfigurationFile)?;
 
-        let legacy = Self::from_property_lists(|key| {
+        let get = |key: &str| {
             dictionary
                 .find(CFString::new(key).as_CFTypeRef())
                 .map(|value| unsafe { CFPropertyList::wrap_under_get_rule(*value) })
-        })
-        .map_err(|_key| ConfigurationError::CorruptConfigurationFile)?;
+        };
+        let secret = get(PreferenceKeys::SECRET)
+            .and_then(|value| value.downcast_into::<CFString>())
+            .ok_or(ConfigurationError::CorruptConfigurationFile)?
+            .to_string();
+        let legacy = Self::from_property_lists(get, secret)
+            .map_err(|_key| ConfigurationError::CorruptConfigurationFile)?;
 
         // Values managed by a configuration profile take precedence over the legacy file
         for (key, value) in legacy.to_property_lists() {
@@ -235,6 +269,10 @@ impl AppConfiguration {
         }
         preferences.synchronize()?;
 
+        if !preferences.is_forced(PreferenceKeys::SECRET) {
+            storage.write_secret(&legacy.secret)?;
+        }
+
         std::fs::remove_file(path).map_err(|error| {
             ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
@@ -242,13 +280,39 @@ impl AppConfiguration {
             }
         })?;
 
-        if let Some(directory) = path.parent() {
-            // Only succeeds if nothing else was stored alongside it
-            let _ = std::fs::remove_dir(directory);
-        }
-
         log::info!("Migrated configuration to {}", PREFERENCES_FILE);
         Ok(())
+    }
+
+    /// Moves a secret stored in the preferences domain (for instance with `defaults write`) into the secret
+    /// file, because any local user can read the preferences domain. A secret managed by a configuration
+    /// profile is left alone – it can't be removed here.
+    fn migrate_secret_from_preferences(storage: &Storage) -> Result<(), ConfigurationError> {
+        let preferences = &storage.preferences;
+
+        if preferences.is_forced(PreferenceKeys::SECRET) {
+            return Ok(());
+        }
+
+        // Only look in the domain this writes to, because that's the only one it can remove the secret from
+        let secret = match preferences.get_local(PreferenceKeys::SECRET) {
+            Some(value) => value
+                .downcast_into::<CFString>()
+                .ok_or(ConfigurationError::PreferenceNotReadable(
+                    PreferenceKeys::SECRET,
+                ))?
+                .to_string(),
+            None => return Ok(()),
+        };
+        validate_secret(&secret)?;
+
+        log::info!(
+            "Moving the secret from the preferences domain to {}",
+            storage.secret_file.display()
+        );
+        storage.write_secret(&secret)?;
+        preferences.remove(PreferenceKeys::SECRET);
+        preferences.synchronize()
     }
 
     /// Reads a configuration from property list values, returning the key of the first value that's
@@ -256,6 +320,7 @@ impl AppConfiguration {
     /// write it.
     fn from_property_lists(
         get: impl Fn(&'static str) -> Option<CFPropertyList>,
+        secret: String,
     ) -> Result<AppConfiguration, &'static str> {
         let allowed_sources = match get(PreferenceKeys::ALLOWED_SOURCES) {
             Some(value) => {
@@ -271,14 +336,12 @@ impl AppConfiguration {
             addresses: get(PreferenceKeys::ADDRESSES)
                 .and_then(property_list_to_addresses)
                 .ok_or(PreferenceKeys::ADDRESSES)?,
-            secret: get(PreferenceKeys::SECRET)
-                .and_then(|value| value.downcast_into::<CFString>())
-                .map(|string| string.to_string())
-                .ok_or(PreferenceKeys::SECRET)?,
+            secret,
             allowed_sources,
         })
     }
 
+    /// Every value except the secret, which is stored separately.
     fn to_property_lists(&self) -> Vec<(&'static str, CFPropertyList)> {
         vec![
             (
@@ -288,10 +351,6 @@ impl AppConfiguration {
             (
                 PreferenceKeys::ADDRESSES,
                 addresses_to_property_list(&self.addresses),
-            ),
-            (
-                PreferenceKeys::SECRET,
-                CFString::new(&self.secret).into_CFPropertyList(),
             ),
             (
                 PreferenceKeys::ALLOWED_SOURCES,
@@ -658,6 +717,10 @@ const PREFERENCES_DOMAIN: &str = "com.jkmassel.shutdownonlan";
 #[cfg(target_os = "macos")]
 const PREFERENCES_FILE: &str = "/Library/Preferences/com.jkmassel.shutdownonlan.plist";
 
+/// Where the secret is stored – see `Storage`.
+#[cfg(target_os = "macos")]
+const SECRET_FILE: &str = "/Library/Application Support/ShutdownOnLan/secret";
+
 /// Where versions before the move to `CFPreferences` stored their configuration.
 #[cfg(target_os = "macos")]
 const LEGACY_CONFIGURATION_FILE: &str =
@@ -705,14 +768,78 @@ fn addresses_to_property_list(addresses: &[IpAddr]) -> CFPropertyList {
         .into_CFPropertyList()
 }
 
+/// Where the macOS configuration lives: the settings in a preferences domain, and the secret in a file only
+/// root can read. The preferences domain can't hold the secret, because `cfprefsd` rewrites its file as
+/// readable by every user whenever it flushes changes – and so does running `defaults` on it.
+#[cfg(target_os = "macos")]
+struct Storage {
+    preferences: Preferences,
+    secret_file: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl Storage {
+    fn system() -> Storage {
+        Storage {
+            preferences: Preferences::system(),
+            secret_file: PathBuf::from(SECRET_FILE),
+        }
+    }
+
+    /// The secret, or `None` if there isn't one yet. A secret managed by a configuration profile takes
+    /// precedence over the file.
+    fn read_secret(&self) -> Result<Option<String>, ConfigurationError> {
+        if self.preferences.is_forced(PreferenceKeys::SECRET) {
+            let secret = self
+                .preferences
+                .get(PreferenceKeys::SECRET)
+                .and_then(|value| value.downcast_into::<CFString>())
+                .ok_or(ConfigurationError::PreferenceNotReadable(
+                    PreferenceKeys::SECRET,
+                ))?;
+            return Ok(Some(secret.to_string()));
+        }
+
+        match std::fs::read_to_string(&self.secret_file) {
+            // Allow for a trailing newline, in case the file was written by hand
+            Ok(contents) => Ok(Some(contents.trim_end_matches(['\r', '\n']).to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                Err(ConfigurationError::RequiresRoot)
+            }
+            Err(error) => Err(ConfigurationError::SecretNotReadable {
+                source: error,
+                path: self.secret_file.display().to_string(),
+            }),
+        }
+    }
+
+    fn write_secret(&self, secret: &str) -> Result<(), ConfigurationError> {
+        let not_writable = |error: std::io::Error| {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigurationError::RequiresRoot
+            } else {
+                ConfigurationError::ConfigurationFileUnwritable {
+                    source: error,
+                    path: self.secret_file.display().to_string(),
+                }
+            }
+        };
+
+        if let Some(directory) = self.secret_file.parent() {
+            std::fs::create_dir_all(directory).map_err(not_writable)?;
+        }
+
+        write_private_file(&self.secret_file, secret.as_bytes()).map_err(not_writable)
+    }
+}
+
 /// A preferences domain. Reads go through the standard search list, so values managed by a configuration
 /// profile take precedence. Writes go to `user`, for any host.
 #[cfg(target_os = "macos")]
 struct Preferences {
     application_id: CFString,
     user: CFStringRef,
-    /// The file `cfprefsd` stores the domain in, if it should be restricted to its owner.
-    private_file: Option<&'static str>,
 }
 
 #[cfg(target_os = "macos")]
@@ -722,7 +849,6 @@ impl Preferences {
         Preferences {
             application_id: CFString::new(PREFERENCES_DOMAIN),
             user: unsafe { core_foundation_sys::preferences::kCFPreferencesAnyUser },
-            private_file: Some(PREFERENCES_FILE),
         }
     }
 
@@ -735,6 +861,25 @@ impl Preferences {
             )
         };
 
+        Self::wrap(value)
+    }
+
+    /// Like `get`, but only looks in the domain that `set` writes to.
+    fn get_local(&self, key: &str) -> Option<CFPropertyList> {
+        let key = CFString::new(key);
+        let value = unsafe {
+            core_foundation_sys::preferences::CFPreferencesCopyValue(
+                key.as_concrete_TypeRef(),
+                self.application_id.as_concrete_TypeRef(),
+                self.user,
+                core_foundation_sys::preferences::kCFPreferencesAnyHost,
+            )
+        };
+
+        Self::wrap(value)
+    }
+
+    fn wrap(value: core_foundation_sys::propertylist::CFPropertyListRef) -> Option<CFPropertyList> {
         if value.is_null() {
             None
         } else {
@@ -743,11 +888,19 @@ impl Preferences {
     }
 
     fn set(&self, key: &str, value: &CFPropertyList) {
+        self.set_raw(key, value.as_concrete_TypeRef());
+    }
+
+    fn remove(&self, key: &str) {
+        self.set_raw(key, std::ptr::null());
+    }
+
+    fn set_raw(&self, key: &str, value: core_foundation_sys::propertylist::CFPropertyListRef) {
         let key = CFString::new(key);
         unsafe {
             core_foundation_sys::preferences::CFPreferencesSetValue(
                 key.as_concrete_TypeRef(),
-                value.as_concrete_TypeRef(),
+                value,
                 self.application_id.as_concrete_TypeRef(),
                 self.user,
                 core_foundation_sys::preferences::kCFPreferencesAnyHost,
@@ -766,7 +919,7 @@ impl Preferences {
         }
     }
 
-    /// Writes pending changes to disk. This is where writing without permission fails.
+    /// Hands pending changes to `cfprefsd`. This is where writing without permission fails.
     fn synchronize(&self) -> Result<(), ConfigurationError> {
         let succeeded = unsafe {
             core_foundation_sys::preferences::CFPreferencesSynchronize(
@@ -776,35 +929,17 @@ impl Preferences {
             ) != 0
         };
 
-        if !succeeded {
-            return Err(ConfigurationError::PreferencesNotWritable);
+        if succeeded {
+            Ok(())
+        } else {
+            Err(ConfigurationError::RequiresRoot)
         }
-
-        self.restrict_permissions()
-    }
-
-    /// Makes the file readable only by its owner – it holds the secret, which any local user could
-    /// otherwise read. `cfprefsd` creates it (and `defaults write` may recreate it) as world-readable.
-    fn restrict_permissions(&self) -> Result<(), ConfigurationError> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = match self.private_file {
-            Some(path) if Path::new(path).exists() => path,
-            _ => return Ok(()),
-        };
-
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
-            ConfigurationError::ConfigurationFileUnwritable {
-                source: error,
-                path: path.to_string(),
-            }
-        })
     }
 }
 
 /// Replaces the contents of `path` with `contents`, leaving the file readable only by its owner – it
 /// holds the secret, which any local user could otherwise read.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -841,8 +976,15 @@ pub enum ConfigurationError {
     PreferenceNotReadable(&'static str),
 
     #[cfg(target_os = "macos")]
-    #[error("Unable to save preferences – changing the configuration requires sudo")]
-    PreferencesNotWritable,
+    #[error("Only root can read or change the configuration – try again with sudo")]
+    RequiresRoot,
+
+    #[cfg(target_os = "macos")]
+    #[error("Unable to read the secret from {path}")]
+    SecretNotReadable {
+        source: std::io::Error,
+        path: String,
+    },
 
     #[cfg(target_os = "macos")]
     #[error(
@@ -891,8 +1033,6 @@ pub enum ConfigurationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "macos")]
-    use std::path::PathBuf;
 
     #[test]
     fn test_set_addresses_accepts_a_comma_separated_list() {
@@ -992,7 +1132,7 @@ mod tests {
         assert!(!output.contains(&configuration.secret));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn test_configuration_file_is_only_readable_by_its_owner() {
         use std::os::unix::fs::PermissionsExt;
@@ -1015,49 +1155,41 @@ mod tests {
         assert_eq!(contents, b"second");
     }
 
-    /// A preferences domain for the current user (so no root is needed) that's deleted when the test
-    /// finishes.
+    /// Storage in a temporary directory (so no root is needed) that's deleted when the test finishes. The
+    /// preferences domain is identified by a path in the directory, so `cfprefsd` stores it there too.
     #[cfg(target_os = "macos")]
-    struct TestPreferences {
-        preferences: Preferences,
-        domain: String,
+    struct TestStorage {
+        storage: Storage,
         directory: PathBuf,
     }
 
     #[cfg(target_os = "macos")]
-    impl TestPreferences {
-        fn new(name: &str) -> TestPreferences {
-            let domain = format!(
-                "{}.test-{}-{}",
-                PREFERENCES_DOMAIN,
+    impl TestStorage {
+        fn new(name: &str) -> TestStorage {
+            let directory = std::env::temp_dir().join(format!(
+                "shutdown-on-lan-test-{}-{}",
                 std::process::id(),
                 name
-            );
-            let directory = std::env::temp_dir().join(&domain);
+            ));
             std::fs::create_dir_all(&directory).unwrap();
+            let domain = directory.join(PREFERENCES_DOMAIN);
 
-            TestPreferences {
-                preferences: Preferences {
-                    application_id: CFString::new(&domain),
-                    user: unsafe { core_foundation_sys::preferences::kCFPreferencesCurrentUser },
-                    private_file: None,
+            TestStorage {
+                storage: Storage {
+                    preferences: Preferences {
+                        application_id: CFString::new(domain.to_str().unwrap()),
+                        user: unsafe {
+                            core_foundation_sys::preferences::kCFPreferencesCurrentUser
+                        },
+                    },
+                    secret_file: directory.join("ShutdownOnLan").join("secret"),
                 },
-                domain,
                 directory,
             }
         }
 
-        fn remove(&self, key: &str) {
-            let key = CFString::new(key);
-            unsafe {
-                core_foundation_sys::preferences::CFPreferencesSetValue(
-                    key.as_concrete_TypeRef(),
-                    std::ptr::null(),
-                    self.preferences.application_id.as_concrete_TypeRef(),
-                    self.preferences.user,
-                    core_foundation_sys::preferences::kCFPreferencesAnyHost,
-                )
-            }
+        fn preferences(&self) -> &Preferences {
+            &self.storage.preferences
         }
 
         fn legacy_file(&self, contents: &str) -> PathBuf {
@@ -1081,22 +1213,18 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    impl Drop for TestPreferences {
+    impl Drop for TestStorage {
         fn drop(&mut self) {
-            for (key, _) in AppConfiguration::default().to_property_lists() {
-                self.remove(key);
+            for key in [
+                PreferenceKeys::PORT,
+                PreferenceKeys::ADDRESSES,
+                PreferenceKeys::SECRET,
+                PreferenceKeys::ALLOWED_SOURCES,
+            ] {
+                self.preferences().remove(key);
             }
-            let _ = self.preferences.synchronize();
+            let _ = self.preferences().synchronize();
             let _ = std::fs::remove_dir_all(&self.directory);
-
-            // An emptied domain still leaves a file behind
-            if let Some(home) = std::env::var_os("HOME") {
-                let _ = std::fs::remove_file(
-                    PathBuf::from(home)
-                        .join("Library/Preferences")
-                        .join(format!("{}.plist", self.domain)),
-                );
-            }
         }
     }
 
@@ -1119,27 +1247,34 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_preferences_round_trip() {
-        let test = TestPreferences::new("round-trip");
-        let configuration = TestPreferences::custom_configuration();
+    fn test_storage_round_trip() {
+        use std::os::unix::fs::PermissionsExt;
 
-        configuration.save_to(&test.preferences).unwrap();
+        let test = TestStorage::new("round-trip");
+        let configuration = TestStorage::custom_configuration();
+
+        configuration.save_to(&test.storage).unwrap();
 
         assert_eq!(
-            AppConfiguration::fetch_from(&test.preferences).unwrap(),
+            AppConfiguration::fetch_from(&test.storage).unwrap(),
             configuration
         );
+
+        // The secret is only stored in the private file
+        assert!(test.preferences().get(PreferenceKeys::SECRET).is_none());
+        let metadata = std::fs::metadata(&test.storage.secret_file).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_empty_preferences_are_filled_with_defaults() {
-        let test = TestPreferences::new("empty");
+    fn test_empty_storage_is_filled_with_defaults() {
+        let test = TestStorage::new("empty");
 
-        AppConfiguration::write_missing_defaults(&test.preferences).unwrap();
+        AppConfiguration::write_missing_defaults(&test.storage).unwrap();
 
         // Every default configuration has a different random secret, so compare everything else
-        let configuration = AppConfiguration::fetch_from(&test.preferences).unwrap();
+        let configuration = AppConfiguration::fetch_from(&test.storage).unwrap();
         assert_eq!(configuration.secret.len(), 32);
         assert_eq!(
             configuration,
@@ -1152,17 +1287,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_only_missing_preferences_are_restored() {
-        let test = TestPreferences::new("missing-value");
-        let configuration = TestPreferences::custom_configuration();
+    fn test_only_missing_values_are_restored() {
+        let test = TestStorage::new("missing-value");
+        let configuration = TestStorage::custom_configuration();
 
-        configuration.save_to(&test.preferences).unwrap();
-        test.remove(PreferenceKeys::PORT);
+        configuration.save_to(&test.storage).unwrap();
+        test.preferences().remove(PreferenceKeys::PORT);
 
-        AppConfiguration::write_missing_defaults(&test.preferences).unwrap();
+        AppConfiguration::write_missing_defaults(&test.storage).unwrap();
 
         assert_eq!(
-            AppConfiguration::fetch_from(&test.preferences).unwrap(),
+            AppConfiguration::fetch_from(&test.storage).unwrap(),
             AppConfiguration {
                 port_number: AppConfiguration::default().port_number,
                 ..configuration
@@ -1173,19 +1308,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_invalid_preferences_are_reported() {
-        let test = TestPreferences::new("invalid-value");
-        TestPreferences::custom_configuration()
-            .save_to(&test.preferences)
+        let test = TestStorage::new("invalid-value");
+        TestStorage::custom_configuration()
+            .save_to(&test.storage)
             .unwrap();
 
         // The port should be a number
-        test.preferences.set(
+        test.preferences().set(
             PreferenceKeys::PORT,
             &CFString::new("not a number").into_CFPropertyList(),
         );
 
         assert!(matches!(
-            AppConfiguration::fetch_from(&test.preferences),
+            AppConfiguration::fetch_from(&test.storage),
             Err(ConfigurationError::PreferenceNotReadable(
                 PreferenceKeys::PORT
             ))
@@ -1194,49 +1329,110 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn test_secret_file_written_by_hand_is_read() {
+        let test = TestStorage::new("secret-by-hand");
+        TestStorage::custom_configuration()
+            .save_to(&test.storage)
+            .unwrap();
+
+        std::fs::write(&test.storage.secret_file, "typed secret\n").unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.storage).unwrap().secret,
+            "typed secret"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_secret_in_preferences_is_moved_to_the_secret_file() {
+        let test = TestStorage::new("secret-in-preferences");
+        TestStorage::custom_configuration()
+            .save_to(&test.storage)
+            .unwrap();
+
+        // For instance, with `defaults write`
+        test.preferences().set(
+            PreferenceKeys::SECRET,
+            &CFString::new("written with defaults").into_CFPropertyList(),
+        );
+        test.preferences().synchronize().unwrap();
+
+        AppConfiguration::migrate_secret_from_preferences(&test.storage).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.storage).unwrap().secret,
+            "written with defaults"
+        );
+        assert!(test.preferences().get(PreferenceKeys::SECRET).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_invalid_secret_in_preferences_is_not_moved() {
+        let test = TestStorage::new("empty-secret-in-preferences");
+        TestStorage::custom_configuration()
+            .save_to(&test.storage)
+            .unwrap();
+
+        test.preferences().set(
+            PreferenceKeys::SECRET,
+            &CFString::new("").into_CFPropertyList(),
+        );
+
+        assert!(matches!(
+            AppConfiguration::migrate_secret_from_preferences(&test.storage),
+            Err(ConfigurationError::InvalidSecret)
+        ));
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.storage).unwrap().secret,
+            "custom secret"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn test_legacy_file_is_migrated_and_removed() {
-        let test = TestPreferences::new("migrate");
+        let test = TestStorage::new("migrate");
         let path = test.legacy_file(LEGACY_PLIST_WITHOUT_ALLOWED_SOURCES);
 
-        AppConfiguration::migrate_legacy_file(&path, &test.preferences).unwrap();
+        AppConfiguration::migrate_legacy_file(&path, &test.storage).unwrap();
 
-        let migrated = AppConfiguration::fetch_from(&test.preferences).unwrap();
+        let migrated = AppConfiguration::fetch_from(&test.storage).unwrap();
         assert_eq!(
             migrated,
             AppConfiguration {
                 allowed_sources: Vec::new(),
-                ..TestPreferences::custom_configuration()
+                ..TestStorage::custom_configuration()
             }
         );
         assert!(migrated.accepts_connections_from(&"10.0.1.99".parse().unwrap()));
+        assert!(test.preferences().get(PreferenceKeys::SECRET).is_none());
         assert!(!path.exists());
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_legacy_file_replaces_existing_preferences() {
-        let test = TestPreferences::new("migrate-over-defaults");
-        AppConfiguration::write_missing_defaults(&test.preferences).unwrap();
+    fn test_legacy_file_replaces_existing_values() {
+        let test = TestStorage::new("migrate-over-defaults");
+        AppConfiguration::write_missing_defaults(&test.storage).unwrap();
         let path = test.legacy_file(LEGACY_PLIST_WITHOUT_ALLOWED_SOURCES);
 
-        AppConfiguration::migrate_legacy_file(&path, &test.preferences).unwrap();
+        AppConfiguration::migrate_legacy_file(&path, &test.storage).unwrap();
 
-        assert_eq!(
-            AppConfiguration::fetch_from(&test.preferences)
-                .unwrap()
-                .port_number,
-            12345
-        );
+        let migrated = AppConfiguration::fetch_from(&test.storage).unwrap();
+        assert_eq!(migrated.port_number, 12345);
+        assert_eq!(migrated.secret, "custom secret");
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn test_corrupt_legacy_file_is_kept() {
-        let test = TestPreferences::new("migrate-corrupt");
+        let test = TestStorage::new("migrate-corrupt");
         let path = test.legacy_file("not a plist");
 
         assert!(matches!(
-            AppConfiguration::migrate_legacy_file(&path, &test.preferences),
+            AppConfiguration::migrate_legacy_file(&path, &test.storage),
             Err(ConfigurationError::CorruptConfigurationFile)
         ));
         assert!(path.exists());

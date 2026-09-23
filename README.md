@@ -44,20 +44,19 @@ sudo launchctl stop com.jkmassel.shutdownonlan
 sudo launchctl start com.jkmassel.shutdownonlan
 ```
 
-The configuration is stored in the `com.jkmassel.shutdownonlan` preferences domain, in `/Library/Preferences/com.jkmassel.shutdownonlan.plist`. Only root can read it, because it holds the secret. It can also be changed with `defaults` – note that `addresses` and `allowed_sources` are arrays:
+The port, IP addresses and allowed sources are stored in the `com.jkmassel.shutdownonlan` preferences domain, in `/Library/Preferences/com.jkmassel.shutdownonlan.plist`. They can also be changed with `defaults` – note that `addresses` and `allowed_sources` are arrays:
 
 ```
 sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan port_number -int 53632
 sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan addresses -array 10.0.1.100
-sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan secret 'correct horse'
 sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan allowed_sources -array 10.0.1.50
 ```
 
-`defaults` leaves the file readable by every user – even `defaults read` does this – so restart the service afterwards, which restricts it to root again. To check the current settings, use `sudo /Library/Services/shutdownonlan get` instead.
+Every user can read the preferences domain, so the secret is stored separately, in `/Library/Application Support/ShutdownOnLan/secret`, which only root can read. Use `sudo /Library/Services/shutdownonlan set --secret` to change it. If a `secret` is written to the preferences domain (for instance with `defaults write`), it's moved to the secret file the next time the service starts or the tool runs.
 
-To manage a fleet of Macs, deploy the same keys in a configuration profile for the `com.jkmassel.shutdownonlan` domain using your MDM. Managed values take precedence over local ones, and `shutdown-on-lan set` refuses to change them. Profiles are readable by any local user, so consider leaving `secret` out of the profile and setting it on each machine instead.
+To manage a fleet of Macs, deploy the same keys in a configuration profile for the `com.jkmassel.shutdownonlan` domain using your MDM. Managed values take precedence over local ones, and `shutdown-on-lan set` refuses to change them. A profile can include `secret` too, but any local user can read profiles – consider leaving it out and setting the secret on each machine instead.
 
-_Earlier versions stored the configuration in `/Library/Application Support/ShutdownOnLan/ShutDownOnLan.plist`. It's imported automatically when the service starts, then deleted._
+_Earlier versions stored the whole configuration in `/Library/Application Support/ShutdownOnLan/ShutDownOnLan.plist`. It's imported automatically when the service starts, then deleted._
 
 #### Linux
 Packages are provided for `x86_64` and `aarch64` (for instance, a Raspberry Pi):

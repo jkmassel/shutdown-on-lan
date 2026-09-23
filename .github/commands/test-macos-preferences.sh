@@ -1,17 +1,22 @@
 #!/bin/bash
-# End-to-end checks for the macOS configuration, which lives in the system-wide preferences domain.
-# Must run as root (with `sudo`, so `SUDO_USER` is set), and changes system state – only run it on CI.
+# End-to-end checks for the macOS configuration: the settings live in the system-wide preferences domain, and
+# the secret in a file only root can read. Must run as root (with `sudo`, so `SUDO_USER` is set), and changes
+# system state – only run it on CI.
 set -euo pipefail
 
 BINARY="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/shutdown-on-lan"
 DOMAIN="com.jkmassel.shutdownonlan"
 PREFERENCES="/Library/Preferences/$DOMAIN.plist"
 MANAGED_PREFERENCES="/Library/Managed Preferences/$DOMAIN.plist"
-LEGACY_DIRECTORY="/Library/Application Support/ShutdownOnLan"
+STORAGE_DIRECTORY="/Library/Application Support/ShutdownOnLan"
+LEGACY_FILE="$STORAGE_DIRECTORY/ShutDownOnLan.plist"
+SECRET_FILE="$STORAGE_DIRECTORY/secret"
 
 fail() {
     echo "::error::$1"
-    [ $# -gt 1 ] && echo "$2"
+    if [ $# -gt 1 ]; then
+        echo "$2"
+    fi
     exit 1
 }
 
@@ -24,16 +29,9 @@ as_user() {
     sudo -u "$SUDO_USER" "$BINARY" "$@"
 }
 
-expect_private() {
-    local mode
-    mode=$(stat -f %Lp "$PREFERENCES")
-    [ "$mode" = "600" ] || fail "$PREFERENCES has mode $mode, but should only be readable by root"
-}
-
-# Reads a stored value straight from the file. `defaults` would also work, but even `defaults read`
-# rewrites the file as world-readable.
+# Reads a value through `cfprefsd` – the file on disk can lag behind it
 stored() {
-    plutil -extract "$1" raw -o - "$PREFERENCES"
+    defaults read "$PREFERENCES" "$1"
 }
 
 expect_output() {
@@ -41,9 +39,21 @@ expect_output() {
     grep -qF -- "$expected" <<<"$output" || fail "Expected output to contain '$expected'" "$output"
 }
 
+expect_secret() {
+    [ "$(cat "$SECRET_FILE")" = "$1" ] || fail "Expected the secret file to contain '$1'"
+
+    local mode
+    mode=$(stat -f %Lp "$SECRET_FILE")
+    [ "$mode" = "600" ] || fail "$SECRET_FILE has mode $mode, but should only be readable by root"
+
+    if output=$(stored secret 2>&1); then
+        fail "The secret is in the preferences domain, which any user can read" "$output"
+    fi
+}
+
 reset() {
     rm -f "$PREFERENCES" "$MANAGED_PREFERENCES"
-    rm -rf "$LEGACY_DIRECTORY"
+    rm -rf "$STORAGE_DIRECTORY"
     # cfprefsd caches domains, so make it re-read them from disk
     killall cfprefsd 2>/dev/null || true
 }
@@ -52,8 +62,8 @@ trap reset EXIT
 reset
 
 check "A legacy configuration file is migrated, then removed"
-mkdir -p "$LEGACY_DIRECTORY"
-cat > "$LEGACY_DIRECTORY/ShutDownOnLan.plist" <<'PLIST'
+mkdir -p "$STORAGE_DIRECTORY"
+cat > "$LEGACY_FILE" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,55 +79,60 @@ cat > "$LEGACY_DIRECTORY/ShutDownOnLan.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-output=$("$BINARY" get --port --ip-addresses --allowed-sources 2>&1)
+output=$("$BINARY" get --port --ip-addresses --allowed-sources --secret 2>&1)
 expect_output "$output" "Current Port: 54321"
 expect_output "$output" "Listening IP Addresses: 127.0.0.1"
 expect_output "$output" "Allowed Sources: any"
-[ ! -e "$LEGACY_DIRECTORY" ] || fail "$LEGACY_DIRECTORY still exists after migrating"
-expect_private
+expect_output "$output" "Secret: legacy-secret"
+[ ! -e "$LEGACY_FILE" ] || fail "$LEGACY_FILE still exists after migrating"
 [ "$(stored port_number)" = "54321" ] || fail "port_number wasn't migrated"
-[ "$(stored secret)" = "legacy-secret" ] || fail "secret wasn't migrated"
+expect_secret "legacy-secret"
 
-check "Changes made with \`defaults\` are read, and the file is restricted again"
+check "Settings changed with \`defaults\` are read"
 defaults write "$PREFERENCES" port_number -int 54322
-[ "$(stat -f %Lp "$PREFERENCES")" = "644" ] || echo "::warning::\`defaults write\` no longer makes the file world-readable"
 expect_output "$("$BINARY" get --port 2>&1)" "Current Port: 54322"
-expect_private
 
-check "The secret can't be read without root"
-if output=$(sudo -u "$SUDO_USER" defaults read "$PREFERENCES" secret 2>&1); then
-    fail "\`defaults read\` returned the secret without root" "$output"
-fi
-if output=$(as_user get --port 2>&1); then
-    fail "\`get\` read the configuration without root" "$output"
-fi
+check "A secret written with \`defaults\` is moved to the secret file"
+defaults write "$PREFERENCES" secret "written-with-defaults"
+expect_output "$("$BINARY" get --secret 2>&1)" "Secret: written-with-defaults"
+expect_secret "written-with-defaults"
 
-check "Changing the configuration requires root"
+check "The configuration can't be read or changed without root"
+if output=$(as_user get --secret 2>&1); then
+    fail "\`get\` read the secret without root" "$output"
+fi
+expect_output "$output" "sudo"
 if output=$(as_user set --port 1 2>&1); then
     fail "\`set\` succeeded without root" "$output"
 fi
-expect_output "$output" "requires sudo"
+expect_output "$output" "sudo"
 [ "$(stored port_number)" = "54322" ] || fail "port_number changed without root"
 
-check "\`set\` writes to the system-wide domain"
-"$BINARY" set --port 54324 --allowed-sources 192.0.2.1 >/dev/null
-expect_private
+check "\`set\` writes the settings to the preferences domain, and the secret to the secret file"
+"$BINARY" set --port 54324 --allowed-sources 192.0.2.1 --secret "set-with-cli" >/dev/null
 [ "$(stored port_number)" = "54324" ] || fail "\`set\` didn't write port_number"
-[ "$(stored allowed_sources.0)" = "192.0.2.1" ] || fail "\`set\` didn't write allowed_sources"
+expect_output "$(stored allowed_sources)" "192.0.2.1"
+expect_secret "set-with-cli"
 
 check "Values managed by a configuration profile take precedence, and can't be changed"
 mkdir -p "/Library/Managed Preferences"
 defaults write "$MANAGED_PREFERENCES" port_number -int 54323
+defaults write "$MANAGED_PREFERENCES" secret "managed-secret"
 killall cfprefsd 2>/dev/null || true
-expect_output "$("$BINARY" get --port 2>&1)" "Current Port: 54323"
-if output=$("$BINARY" set --port 1 2>&1); then
-    fail "\`set\` changed a managed value" "$output"
-fi
-expect_output "$output" "managed by a configuration profile"
+output=$("$BINARY" get --port --secret 2>&1)
+expect_output "$output" "Current Port: 54323"
+expect_output "$output" "Secret: managed-secret"
+[ "$(cat "$SECRET_FILE")" = "set-with-cli" ] || fail "A managed secret replaced the secret file"
+for option in "--port 1" "--secret other"; do
+    # shellcheck disable=SC2086
+    if output=$("$BINARY" set $option 2>&1); then
+        fail "\`set $option\` changed a managed value" "$output"
+    fi
+    expect_output "$output" "managed by a configuration profile"
+done
 
 check "Values that aren't managed can still be changed"
-"$BINARY" set --secret "new-secret" >/dev/null
-[ "$(stored secret)" = "new-secret" ] || fail "\`set\` didn't write secret"
-expect_private
+"$BINARY" set --allowed-sources "" >/dev/null
+expect_output "$("$BINARY" get --allowed-sources 2>&1)" "Allowed Sources: any"
 
 echo "All macOS preferences checks passed"
