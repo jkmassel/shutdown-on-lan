@@ -1,0 +1,5 @@
+# If you've changed the port in /etc/shutdown-on-lan.toml, change it here too
+[shutdown-on-lan]
+title=Shutdown on LAN
+description=Allows this machine to be shut down remotely by sending a secret over the network
+ports=53632/tcp

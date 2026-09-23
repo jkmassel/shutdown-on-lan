@@ -22,6 +22,7 @@ pub const MAX_SECRET_LENGTH: usize = 4096;
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfiguration {
     pub port_number: u16,
+    /// The local interface addresses to accept connections on. Empty means every interface.
     pub addresses: Vec<IpAddr>,
     pub secret: String,
     /// The client addresses allowed to connect. Empty means any client may connect.
@@ -49,8 +50,10 @@ impl AppConfiguration {
         Self::fetch()
     }
 
+    /// Sets the local interface addresses from a comma-separated list. An empty string accepts
+    /// connections on every interface.
     pub fn set_addresses(&mut self, string: &str) -> Result<(), AddrParseError> {
-        self.addresses = parse_addresses(string)?;
+        self.addresses = parse_optional_addresses(string)?;
         Ok(())
     }
 
@@ -71,7 +74,7 @@ impl AppConfiguration {
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
-        self.addresses.contains(ip)
+        self.addresses.is_empty() || self.addresses.contains(ip)
     }
 
     /// Whether a client at `ip` is allowed to connect.
@@ -91,6 +94,15 @@ pub fn parse_optional_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseEr
     }
 
     parse_addresses(string)
+}
+
+/// Like `format_addresses`, but describes an empty list of interface addresses as meaning every interface.
+pub fn describe_addresses(addresses: &[IpAddr]) -> String {
+    if addresses.is_empty() {
+        "every interface".to_string()
+    } else {
+        format_addresses(addresses)
+    }
 }
 
 pub fn format_addresses(addresses: &[IpAddr]) -> String {
@@ -207,7 +219,7 @@ impl AppConfiguration {
         let string = self.to_toml()?;
 
         let path = PathBuf::from(Self::configuration_file_path());
-        std::fs::write(&path, string).map_err(|error| {
+        write_private_file(&path, string.as_bytes()).map_err(|error| {
             ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
                 path: path.into_os_string().into_string().unwrap(),
@@ -301,7 +313,7 @@ impl AppConfiguration {
 
         Ok(AppConfiguration {
             port_number: registry.read_u16(ConfigurationRegistryKeys::Port)?,
-            addresses: parse_addresses(&ips_string).map_err(|_error| {
+            addresses: parse_optional_addresses(&ips_string).map_err(|_error| {
                 ConfigurationError::RegistryKeyNotReadable(ConfigurationRegistryKeys::IpAddress)
             })?,
             secret: registry.read_string(ConfigurationRegistryKeys::Secret)?,
@@ -370,15 +382,25 @@ impl AppConfiguration {
     }
 }
 
+/// A new installation accepts connections from any client on every interface, so each one gets its own
+/// random secret – a shared default secret would let anyone on the network shut it down.
 impl Default for AppConfiguration {
     fn default() -> Self {
         AppConfiguration {
             port_number: 53632,
-            addresses: [IpAddr::from(Ipv4Addr::new(127, 0, 0, 1))].to_vec(),
-            secret: "Super Secret String".to_string(),
+            addresses: Vec::new(),
+            secret: generate_secret(),
             allowed_sources: Vec::new(),
         }
     }
+}
+
+/// Generates a secret from 128 random bits, hex-encoded so that it's easy to type into a control system.
+fn generate_secret() -> String {
+    let mut bytes = [0u8; 16];
+    // Reads the operating system's cryptographically secure random number generator
+    getrandom::fill(&mut bytes).expect("the system random number generator is unavailable");
+    bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
 // Implemented by hand so the secret never ends up in a log
@@ -561,15 +583,34 @@ impl Plist {
         plist::to_writer_xml(&mut bytes, &configuration)
             .map_err(|_e| ConfigurationError::InvalidConfiguration)?;
 
-        // `fs::write` truncates the file – otherwise a shorter configuration would leave the tail of
-        // the previous one behind, corrupting the file.
-        std::fs::write(path, bytes).map_err(|error| {
+        write_private_file(path, &bytes).map_err(|error| {
             ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
                 path: path.display().to_string(),
             }
         })
     }
+}
+
+/// Replaces the contents of `path` with `contents`, leaving the file readable only by its owner – it
+/// holds the secret, which any local user could otherwise read.
+#[cfg(unix)]
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // Truncate the file – otherwise a shorter configuration would leave the tail of the previous one
+    // behind, corrupting the file.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    // `mode` only applies when the file is created, so also restrict a file written by an older version
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)
 }
 
 #[derive(Error, Debug)]
@@ -641,15 +682,18 @@ mod tests {
     #[test]
     fn test_set_addresses_rejects_invalid_addresses_without_modifying_the_configuration() {
         let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
 
         assert!(configuration
             .set_addresses("10.0.1.100,10.0.1.300")
             .is_err());
-        assert!(configuration.set_addresses("").is_err());
         assert_eq!(
             configuration.addresses,
-            AppConfiguration::default().addresses
+            vec!["10.0.1.100".parse::<IpAddr>().unwrap()]
         );
+
+        configuration.set_addresses("").unwrap();
+        assert!(configuration.addresses.is_empty());
     }
 
     #[test]
@@ -686,17 +730,60 @@ mod tests {
     }
 
     #[test]
-    fn test_default_configuration_only_accepts_connections_on_loopback() {
+    fn test_default_configuration_accepts_connections_on_every_interface() {
         let configuration = AppConfiguration::default();
 
         assert!(configuration.accepts_connections_on(&"127.0.0.1".parse().unwrap()));
-        assert!(!configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_addresses_only_accept_connections_on_listed_interfaces() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
+
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(!configuration.accepts_connections_on(&"192.168.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_each_default_configuration_has_its_own_random_secret() {
+        let first = AppConfiguration::default().secret;
+        let second = AppConfiguration::default().secret;
+
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 32);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn test_debug_output_does_not_include_the_secret() {
-        let output = format!("{:?}", AppConfiguration::default());
-        assert!(!output.contains("Super Secret String"));
+        let configuration = AppConfiguration::default();
+        let output = format!("{:?}", configuration);
+        assert!(!output.contains(&configuration.secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_configuration_file_is_only_readable_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("shutdown-on-lan-test-{}.mode", std::process::id()));
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        write_private_file(&path, b"first").unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        // A file left readable by an older version is restricted the next time it's written
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_file(&path, b"second").unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let final_mode = mode(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(final_mode, 0o600);
+        assert_eq!(contents, b"second");
     }
 
     #[cfg(target_os = "macos")]
@@ -836,9 +923,15 @@ mod tests {
 
         AppConfiguration::write_missing_defaults(&test.registry).unwrap();
 
+        // Every default configuration has a different random secret, so compare everything else
+        let configuration = AppConfiguration::fetch_from(&test.registry).unwrap();
+        assert_eq!(configuration.secret.len(), 32);
         assert_eq!(
-            AppConfiguration::fetch_from(&test.registry).unwrap(),
-            AppConfiguration::default()
+            configuration,
+            AppConfiguration {
+                secret: configuration.secret.clone(),
+                ..AppConfiguration::default()
+            }
         );
     }
 

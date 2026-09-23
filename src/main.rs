@@ -3,7 +3,7 @@ extern crate log;
 extern crate simplelog;
 extern crate system_shutdown;
 
-use crate::configuration::{format_addresses, AppConfiguration};
+use crate::configuration::{describe_addresses, format_addresses, AppConfiguration};
 use anyhow::{Context, Result};
 use simplelog::*;
 use std::fs::OpenOptions;
@@ -39,11 +39,16 @@ enum Command {
         /// Print the client IP address(es) allowed to connect (according to the local configuration file, if present)
         #[structopt(long = "allowed-sources")]
         allowed_sources: bool,
+
+        /// Print the secret that shuts this machine down
+        #[structopt(long = "secret")]
+        secret: bool,
     },
     Set {
         #[structopt(long = "port")]
         port: Option<u16>,
 
+        /// A comma-separated list of local interface IP addresses to accept connections on. Pass an empty string to accept connections on every interface.
         #[structopt(long = "ip-address")]
         ip_address: Option<String>,
 
@@ -54,6 +59,8 @@ enum Command {
         #[structopt(long = "allowed-sources")]
         allowed_sources: Option<String>,
     },
+    /// Create the configuration, with a random secret, if it doesn't exist yet
+    Init {},
     /// Run the tool in standalone mode (mostly only useful on Windows, the same as running with no arguments on other platforms)
     Run {},
 }
@@ -98,7 +105,10 @@ fn main() -> Result<()> {
                 config
                     .set_addresses(&ip_address)
                     .with_context(|| format!("Invalid IP address list: {ip_address:?}"))?;
-                println!("Set IP Addresses: {}", format_addresses(&config.addresses));
+                println!(
+                    "Set IP Addresses: {}",
+                    describe_addresses(&config.addresses)
+                );
             }
 
             if let Some(secret) = secret {
@@ -118,11 +128,15 @@ fn main() -> Result<()> {
             config.save()?;
 
             println!("Configuration Changes Saved.");
+
+            // The service only reads its configuration at startup
+            println!("Restart the service to apply them: {RESTART_COMMAND}");
         }
         Some(Command::Get {
             port,
             ip_addresses,
             allowed_sources,
+            secret,
         }) => {
             let config = get_app_configuration()?;
 
@@ -133,13 +147,21 @@ fn main() -> Result<()> {
             if ip_addresses {
                 println!(
                     "Listening IP Addresses: {}",
-                    format_addresses(&config.addresses)
+                    describe_addresses(&config.addresses)
                 );
             }
 
             if allowed_sources {
                 println!("Allowed Sources: {}", describe_sources(&config));
             }
+
+            if secret {
+                println!("Secret: {}", config.secret);
+            }
+        }
+        Some(Command::Init {}) => {
+            get_app_configuration()?;
+            println!("Configuration ready. To see the secret, run `shutdown-on-lan get --secret`.");
         }
         Some(Command::Run {}) => {
             println!("Running in standalone mode");
@@ -149,6 +171,15 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+const RESTART_COMMAND: &str = "sudo systemctl restart shutdown-on-lan";
+
+#[cfg(target_os = "macos")]
+const RESTART_COMMAND: &str = "sudo launchctl kickstart -k system/com.jkmassel.shutdownonlan";
+
+#[cfg(windows)]
+const RESTART_COMMAND: &str = "Restart-Service ShutdownOnLan (from an Administrative PowerShell)";
 
 fn describe_sources(config: &AppConfiguration) -> String {
     if config.allowed_sources.is_empty() {

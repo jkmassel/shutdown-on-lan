@@ -2,6 +2,10 @@
 name = "shutdown-on-lan"
 version = "0.2.0"
 authors = ["Jeremy Massel"]
+license = "MPL-2.0"
+description = "Shuts this machine down when it receives a secret over the network – the opposite of wake-on-LAN"
+homepage = "https://github.com/jkmassel/shutdown-on-lan"
+repository = "https://github.com/jkmassel/shutdown-on-lan"
 edition = "2018"
 default-run = "shutdown-on-lan"
 
@@ -16,6 +20,7 @@ structopt = { version = "0.3", default-features = false }
 anyhow = "1.0.104"
 thiserror = "2"
 exitcode = "1.1.2"
+getrandom = "0.4"
 
 # Fix security warning
 time = "0.3.47"
@@ -31,3 +36,38 @@ toml = "1.1.6"
 plist = "1.10"
 dirs = "7.0"
 whoami = "2"
+
+# Linux packages, built by `build/linux/build-packages.sh`
+[package.metadata.deb]
+section = "net"
+extended-description = """\
+Allows shutting down this machine remotely with a single TCP packet, for instance from a control \
+system such as an AMX controller. Configure it in /etc/shutdown-on-lan.toml."""
+license-file = ["LICENSE", "0"]
+# The binary is statically linked
+depends = ""
+assets = [
+    ["target/release/shutdown-on-lan", "usr/bin/", "755"],
+    ["build/linux/firewalld/shutdown-on-lan.xml", "usr/lib/firewalld/services/", "644"],
+    # Everything in /etc is a conffile, so upgrades never overwrite a user's changes
+    ["build/linux/ufw/shutdown-on-lan", "etc/ufw/applications.d/", "644"],
+    ["README.md", "usr/share/doc/shutdown-on-lan/", "644"],
+]
+# `postinst` creates the configuration with a random secret, so starting the service on install is safe
+systemd-units = { unit-scripts = "build/linux", enable = true, start = true }
+maintainer-scripts = "build/linux/debian"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/shutdown-on-lan", dest = "/usr/bin/shutdown-on-lan", mode = "755" },
+    { source = "build/linux/shutdown-on-lan.service", dest = "/usr/lib/systemd/system/shutdown-on-lan.service", mode = "644" },
+    { source = "build/linux/firewalld/shutdown-on-lan.xml", dest = "/usr/lib/firewalld/services/shutdown-on-lan.xml", mode = "644" },
+    { source = "build/linux/ufw/shutdown-on-lan", dest = "/etc/ufw/applications.d/shutdown-on-lan", mode = "644", config = "noreplace" },
+    { source = "README.md", dest = "/usr/share/doc/shutdown-on-lan/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/shutdown-on-lan/LICENSE", mode = "644", doc = true },
+]
+post_install_script = "build/linux/rpm/post.sh"
+pre_uninstall_script = "build/linux/rpm/preun.sh"
+post_uninstall_script = "build/linux/rpm/postun.sh"
+# The binary is statically linked
+auto-req = "no"
