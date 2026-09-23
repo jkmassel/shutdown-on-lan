@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::net::{AddrParseError, IpAddr, Ipv4Addr};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{AddrParseError, IpAddr};
 #[cfg(not(windows))]
 use std::path::Path;
 use std::path::PathBuf;
-use std::vec;
 use thiserror::Error;
 
 #[cfg(windows)]
@@ -41,18 +39,6 @@ pub struct AppConfiguration {
     pub allowed_sources: Vec<IpAddr>,
 }
 
-pub trait AppConfigurationStorage {
-    fn fetch() -> Result<AppConfiguration, ConfigurationError>;
-    fn save(&self) -> Result<(), ConfigurationError>;
-    fn delete(&self) -> Result<(), ConfigurationError>;
-
-    fn configuration_storage_path() -> String;
-    fn configuration_file_path() -> String;
-
-    fn create_configuration_if_not_exists() -> Result<(), ConfigurationError>;
-    fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError>;
-}
-
 impl AppConfiguration {
     /// Reads the configuration, creating it from defaults first if needed.
     pub fn load() -> Result<AppConfiguration, ConfigurationError> {
@@ -81,13 +67,20 @@ impl AppConfiguration {
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
-        self.addresses.is_empty() || self.addresses.contains(ip)
+        self.addresses.is_empty() || contains_address(&self.addresses, ip)
     }
 
     /// Whether a client at `ip` is allowed to connect.
     pub fn accepts_connections_from(&self, ip: &IpAddr) -> bool {
-        self.allowed_sources.is_empty() || self.allowed_sources.contains(ip)
+        self.allowed_sources.is_empty() || contains_address(&self.allowed_sources, ip)
     }
+}
+
+/// Treats an IPv4 address and the IPv4-mapped IPv6 form of it (`::ffff:10.0.1.50`) as the same address.
+fn contains_address(addresses: &[IpAddr], ip: &IpAddr) -> bool {
+    addresses
+        .iter()
+        .any(|address| address.to_canonical() == ip.to_canonical())
 }
 
 fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
@@ -454,11 +447,6 @@ impl AppConfiguration {
         self.save_to(&Registry::with_default_root_key()?)
     }
 
-    pub fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
-        Registry::with_default_root_key()?;
-        Ok(())
-    }
-
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::info!("Checking whether configuration needs to be created");
         Self::write_missing_defaults(&Registry::with_default_root_key()?)
@@ -568,30 +556,6 @@ impl std::fmt::Debug for AppConfiguration {
             .field("secret", &"<redacted>")
             .field("allowed_sources", &self.allowed_sources)
             .finish()
-    }
-}
-
-impl ToSocketAddrs for AppConfiguration {
-    type Iter = vec::IntoIter<SocketAddr>;
-
-    fn to_socket_addrs(&self) -> std::io::Result<vec::IntoIter<SocketAddr>> {
-        let mut addresses: Vec<SocketAddr> = Vec::new();
-
-        log::info!(
-            "Read configuration with port number: {:?}",
-            self.port_number
-        );
-
-        // Bind every interface rather than just the configured `addresses`. On Windows the service starts
-        // before the network interfaces are up, so binding a specific address fails at boot and the service
-        // never listens. Instead, `listener_service` rejects connections that arrive on interfaces that
-        // aren't in `addresses` after `accept`.
-        let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
-
-        addresses.push(SocketAddr::from((address, self.port_number)));
-
-        let ret = addresses.into_iter();
-        Ok(ret)
     }
 }
 
@@ -1083,6 +1047,19 @@ mod tests {
         assert!(configuration.accepts_connections_from(&"10.0.1.51".parse().unwrap()));
         assert!(!configuration.accepts_connections_from(&"10.0.1.52".parse().unwrap()));
         assert!(configuration.set_allowed_sources("10.0.1.300").is_err());
+    }
+
+    #[test]
+    fn test_ipv4_mapped_addresses_match_ipv4_addresses() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
+        configuration
+            .set_allowed_sources("::ffff:10.0.1.50")
+            .unwrap();
+
+        assert!(configuration.accepts_connections_on(&"::ffff:10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_from(&"10.0.1.50".parse().unwrap()));
+        assert!(!configuration.accepts_connections_from(&"::1".parse().unwrap()));
     }
 
     #[test]

@@ -1,7 +1,7 @@
+use socket2::{Domain, Protocol, SockRef, Socket, TcpKeepalive, Type};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
-use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,8 +12,17 @@ use crate::configuration::{
 };
 
 /// Clients may hold a connection open indefinitely to detect whether the machine is on, so cap how many
-/// we'll hold at once to avoid exhausting threads and file descriptors.
+/// we'll hold at once to avoid exhausting threads and file descriptors. Each source only gets a few of
+/// them, so that one client can't take every slot and lock the others out.
 const MAX_OPEN_CONNECTIONS: usize = 32;
+const MAX_OPEN_CONNECTIONS_PER_SOURCE: usize = 4;
+
+/// Probes idle connections, so that one whose client went away without closing it (because it lost
+/// power, for instance) is closed instead of holding a slot forever. A dead client is noticed after
+/// `KEEPALIVE_TIME + KEEPALIVE_INTERVAL * KEEPALIVE_RETRIES` – 90 seconds.
+const KEEPALIVE_TIME: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const KEEPALIVE_RETRIES: u32 = 3;
 
 /// After a wrong secret, the next attempt from the same source waits this long, doubling with each
 /// further failure up to `MAX_ATTEMPT_DELAY`.
@@ -24,14 +33,17 @@ const MAX_ATTEMPT_DELAY: Duration = Duration::from_secs(5);
 const FORGET_SOURCE_AFTER: Duration = Duration::from_secs(5 * 60);
 
 pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
-    let listener = TcpListener::bind(configuration)?;
+    let listener = bind(configuration.port_number)?;
     log::info!(
         "Listening on port {} for connections to {}",
         configuration.port_number,
         describe_addresses(&configuration.addresses)
     );
 
-    let open_connections = Arc::new(AtomicUsize::new(0));
+    let slots = Arc::new(ConnectionSlots::new(
+        MAX_OPEN_CONNECTIONS,
+        MAX_OPEN_CONNECTIONS_PER_SOURCE,
+    ));
     let throttle = Arc::new(Throttle::new(INITIAL_ATTEMPT_DELAY, MAX_ATTEMPT_DELAY));
 
     for stream in listener.incoming() {
@@ -43,8 +55,9 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
             }
         };
 
+        // IPv4 connections to the dual-stack listener arrive as IPv4-mapped IPv6 addresses
         let peer_address = match stream.peer_addr() {
-            Ok(address) => address,
+            Ok(address) => SocketAddr::new(address.ip().to_canonical(), address.port()),
             Err(error) => {
                 log::warn!("Dropping connection from unknown peer – {}", error);
                 continue;
@@ -53,7 +66,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
         let peer = peer_address.to_string();
 
         let interface_ip = match stream.local_addr() {
-            Ok(address) => address.ip(),
+            Ok(address) => address.ip().to_canonical(),
             Err(error) => {
                 log::warn!("Dropping connection from {} – {}", peer, error);
                 continue;
@@ -79,36 +92,164 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
             continue;
         }
 
-        if open_connections.fetch_add(1, Ordering::SeqCst) >= MAX_OPEN_CONNECTIONS {
-            open_connections.fetch_sub(1, Ordering::SeqCst);
-            log::warn!(
-                "Rejected connection from {} – too many open connections",
-                peer
-            );
-            continue;
+        let slot = match ConnectionSlots::acquire(&slots, peer_address.ip()) {
+            Ok(slot) => slot,
+            Err(error) => {
+                log::warn!("Rejected connection from {} – {}", peer, error);
+                continue;
+            }
+        };
+
+        if let Err(error) = enable_keepalive(&stream) {
+            log::warn!("Unable to enable keepalive for {} – {}", peer, error);
         }
 
         let secret = configuration.secret.clone();
-        let open_connections = Arc::clone(&open_connections);
         let throttle = Arc::clone(&throttle);
 
         thread::spawn(move || {
             log::info!("New connection: {}", peer);
-            handle_stream(stream, &secret, &throttle, peer_address.ip());
-            open_connections.fetch_sub(1, Ordering::SeqCst);
+            handle_stream(stream, &secret, &throttle, peer_address);
+            drop(slot);
         });
     }
 
     Ok(())
 }
 
-fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, source: IpAddr) {
-    let peer = stream
-        .peer_addr()
-        .map(|address| address.to_string())
-        .unwrap_or_else(|_| source.to_string());
+/// Listens on every interface, for both IPv6 and IPv4 where the system supports IPv6.
+///
+/// This binds every interface rather than just the configured `addresses`. On Windows the service starts
+/// before the network interfaces are up, so binding a specific address fails at boot and the service
+/// never listens. Instead, `run` rejects connections that arrive on interfaces that aren't in `addresses`
+/// after `accept`.
+fn bind(port: u16) -> io::Result<TcpListener> {
+    let ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+    let ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
 
-    match wait_for_secret(BufReader::new(stream), secret, throttle, source) {
+    // Accepting IPv4 connections on an IPv6 socket is off by default on Windows, so turn it on explicitly
+    let socket = match Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
+        .and_then(|socket| socket.set_only_v6(false).map(|()| socket))
+    {
+        Ok(socket) => socket,
+        Err(error) => {
+            log::info!("IPv6 is unavailable, so only listening for IPv4 connections – {error}");
+            return listen(
+                Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?,
+                ipv4,
+            );
+        }
+    };
+
+    match listen(socket, ipv6) {
+        Err(error) if error.kind() == io::ErrorKind::AddrNotAvailable => {
+            log::info!("IPv6 is unavailable, so only listening for IPv4 connections – {error}");
+            listen(
+                Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?,
+                ipv4,
+            )
+        }
+        result => result,
+    }
+}
+
+fn listen(socket: Socket, address: SocketAddr) -> io::Result<TcpListener> {
+    // Matches `TcpListener::bind`, which allows restarting while old connections are in `TIME_WAIT`. On
+    // Windows the same option would let another program take over the port, so it's left off there.
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+
+    socket.bind(&address.into())?;
+    socket.listen(128)?;
+    Ok(socket.into())
+}
+
+fn enable_keepalive(stream: &TcpStream) -> io::Result<()> {
+    SockRef::from(stream).set_tcp_keepalive(
+        &TcpKeepalive::new()
+            .with_time(KEEPALIVE_TIME)
+            .with_interval(KEEPALIVE_INTERVAL)
+            .with_retries(KEEPALIVE_RETRIES),
+    )
+}
+
+/// Counts open connections, in total and by source address.
+struct ConnectionSlots {
+    limit: usize,
+    per_source_limit: usize,
+    open: Mutex<OpenConnections>,
+}
+
+#[derive(Default)]
+struct OpenConnections {
+    total: usize,
+    by_source: HashMap<IpAddr, usize>,
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+enum SlotError {
+    #[error("too many open connections")]
+    TooManyConnections,
+    #[error("too many open connections from this source")]
+    TooManyConnectionsFromSource,
+}
+
+impl ConnectionSlots {
+    fn new(limit: usize, per_source_limit: usize) -> ConnectionSlots {
+        ConnectionSlots {
+            limit,
+            per_source_limit,
+            open: Mutex::new(OpenConnections::default()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, OpenConnections> {
+        self.open.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Takes a slot for a connection from `source`, which is released when the returned value is dropped.
+    fn acquire(slots: &Arc<ConnectionSlots>, source: IpAddr) -> Result<ConnectionSlot, SlotError> {
+        let mut open = slots.lock();
+
+        if open.by_source.get(&source).copied().unwrap_or(0) >= slots.per_source_limit {
+            return Err(SlotError::TooManyConnectionsFromSource);
+        }
+
+        if open.total >= slots.limit {
+            return Err(SlotError::TooManyConnections);
+        }
+
+        open.total += 1;
+        *open.by_source.entry(source).or_insert(0) += 1;
+
+        Ok(ConnectionSlot {
+            slots: Arc::clone(slots),
+            source,
+        })
+    }
+}
+
+struct ConnectionSlot {
+    slots: Arc<ConnectionSlots>,
+    source: IpAddr,
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        let mut open = self.slots.lock();
+        open.total -= 1;
+
+        if let Some(count) = open.by_source.get_mut(&self.source) {
+            *count -= 1;
+            if *count == 0 {
+                open.by_source.remove(&self.source);
+            }
+        }
+    }
+}
+
+fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: SocketAddr) {
+    match wait_for_secret(BufReader::new(stream), secret, throttle, peer.ip()) {
         Ok(true) => {
             log::info!("Shutting down - source: {}", peer);
 
@@ -323,6 +464,96 @@ mod tests {
             !wait_for_secret(Cursor::new(b"\n".to_vec()), "", &unthrottled(), source()).unwrap()
         );
         assert!(!secrets_match(b"", b""));
+    }
+
+    fn slots() -> Arc<ConnectionSlots> {
+        Arc::new(ConnectionSlots::new(3, 2))
+    }
+
+    #[test]
+    fn test_connections_from_one_source_are_capped() {
+        let slots = slots();
+
+        let _first = ConnectionSlots::acquire(&slots, source()).unwrap();
+        let second = ConnectionSlots::acquire(&slots, source()).unwrap();
+        assert_eq!(
+            ConnectionSlots::acquire(&slots, source()).err(),
+            Some(SlotError::TooManyConnectionsFromSource)
+        );
+
+        // Closing a connection frees its slot
+        drop(second);
+        assert!(ConnectionSlots::acquire(&slots, source()).is_ok());
+    }
+
+    #[test]
+    fn test_connections_from_every_source_are_capped() {
+        let slots = slots();
+
+        let _held = [
+            ConnectionSlots::acquire(&slots, "10.0.1.50".parse().unwrap()).unwrap(),
+            ConnectionSlots::acquire(&slots, "10.0.1.51".parse().unwrap()).unwrap(),
+            ConnectionSlots::acquire(&slots, "10.0.1.52".parse().unwrap()).unwrap(),
+        ];
+
+        assert_eq!(
+            ConnectionSlots::acquire(&slots, "10.0.1.53".parse().unwrap()).err(),
+            Some(SlotError::TooManyConnections)
+        );
+    }
+
+    #[test]
+    fn test_released_slots_are_forgotten() {
+        let slots = slots();
+        drop(ConnectionSlots::acquire(&slots, source()).unwrap());
+
+        let open = slots.lock();
+        assert_eq!(open.total, 0);
+        assert!(open.by_source.is_empty());
+    }
+
+    /// Connects to a listener from `bind`, returning the addresses as `run` sees them.
+    fn connect(listener: &TcpListener, host: IpAddr) -> (IpAddr, IpAddr) {
+        let port = listener.local_addr().unwrap().port();
+        let _client = TcpStream::connect((host, port)).unwrap();
+        let (stream, peer) = listener.accept().unwrap();
+
+        (
+            stream.local_addr().unwrap().ip().to_canonical(),
+            peer.ip().to_canonical(),
+        )
+    }
+
+    #[test]
+    fn test_listener_accepts_ipv4_connections() {
+        let listener = bind(0).unwrap();
+        let localhost = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+        assert_eq!(connect(&listener, localhost), (localhost, localhost));
+    }
+
+    #[test]
+    fn test_listener_accepts_ipv6_connections() {
+        let listener = bind(0).unwrap();
+        let localhost = IpAddr::V6(Ipv6Addr::LOCALHOST);
+
+        assert_eq!(connect(&listener, localhost), (localhost, localhost));
+    }
+
+    #[test]
+    fn test_accepted_connections_are_kept_alive() {
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let (stream, _peer) = listener.accept().unwrap();
+
+        enable_keepalive(&stream).unwrap();
+
+        let socket = SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        // Windows can't report the keepalive timings
+        #[cfg(not(windows))]
+        assert_eq!(socket.tcp_keepalive_time().unwrap(), KEEPALIVE_TIME);
     }
 
     fn throttle() -> Throttle {

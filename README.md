@@ -13,7 +13,7 @@ Allows shutting down a computer remotely with a single TCP packet via external c
 Installers are provided for Windows, macOS and Linux. Each installation generates its own random secret, and by default accepts connections from any client on every network interface – so once you've given the secret to your control system, it's ready to use. The following settings are available:
  
 ##### IP Address
-Customizing the IP address field allows you to specify which interfaces the service will accept connections on, which is useful when the machine is connected to more than one network – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list. Connections arriving on any other interface are closed without being read. By default this is empty, which accepts connections on every interface. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
+Customizing the IP address field allows you to specify which interfaces the service will accept connections on, which is useful when the machine is connected to more than one network – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list, and both IPv4 and IPv6 addresses are supported. Connections arriving on any other interface are closed without being read. By default this is empty, which accepts connections on every interface. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
 
 ##### Allowed Sources
 Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect. As with the IP address, you should use a DHCP reservation or a static address for each client.
@@ -111,7 +111,7 @@ The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the con
 
 #### Detecting State
 
-This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once – further connections are closed immediately.
+This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once, and up to 4 from any one client address – further connections are closed immediately. Idle connections are probed with TCP keepalives, so a connection whose client went away without closing it (for instance, because it lost power) is closed after about 90 seconds rather than holding its slot forever.
 
 ### Debugging Issues
 
