@@ -31,10 +31,10 @@ jobs:
       - name: Build
         run: .github/commands/build-for-windows.bat
       - name: Upload Artifact
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
-          name: shutdown-on-lan-windows-installer.exe
-          path: build/windows/Bundle.exe
+          name: shutdown-on-lan-windows-installer.msi
+          path: build/windows/Product.msi
       - name: Attach Artifact to Release
         id: upload-windows-release-asset 
         uses: actions/upload-release-asset@v1
@@ -42,8 +42,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/windows/Bundle.exe
-          asset_name: shutdown-on-lan-windows-installer.exe
+          asset_path: build/windows/Product.msi
+          asset_name: shutdown-on-lan-windows-installer.msi
           asset_content_type: application/octet-stream
 
   mac:
