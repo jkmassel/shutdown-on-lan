@@ -118,6 +118,9 @@ fn main() -> Result<()> {
             config.save()?;
 
             println!("Configuration Changes Saved.");
+
+            // The service only reads its configuration at startup
+            println!("Restart the service to apply them: {RESTART_COMMAND}");
         }
         Some(Command::Get {
             port,
@@ -149,6 +152,15 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+const RESTART_COMMAND: &str = "sudo systemctl restart shutdown-on-lan";
+
+#[cfg(target_os = "macos")]
+const RESTART_COMMAND: &str = "sudo launchctl kickstart -k system/com.jkmassel.shutdownonlan";
+
+#[cfg(windows)]
+const RESTART_COMMAND: &str = "Restart-Service ShutdownOnLan (from an Administrative PowerShell)";
 
 fn describe_sources(config: &AppConfiguration) -> String {
     if config.allowed_sources.is_empty() {
