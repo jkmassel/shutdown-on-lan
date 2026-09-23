@@ -4,10 +4,8 @@ set -e
 ## Stop the process (if needed) – this fails on first install, when it isn't loaded yet
 launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || true
 
-## Older versions left the configuration readable by every user, and it holds the secret
-chmod 600 "/Library/Application Support/ShutdownOnLan/ShutDownOnLan.plist" 2>/dev/null || true
-
-## Create the configuration with a random secret, unless it already exists
+## Create the configuration with a random secret, unless it already exists. This also imports the
+## configuration file written by older versions, and restricts the configuration to root.
 /Library/Services/shutdownonlan init
 
 ## Start the process

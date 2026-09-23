@@ -37,12 +37,27 @@ _The secret cannot be empty or longer than 4096 bytes._
 #### Mac
 1. Download the latest version of the application and run the installer.
 2. macOS may warn that the package cannot be opened because it is from an unknown developer. Right-clicking on the package and choosing "Open" will allow you to run it.
-3. Once the installer is finished, you can configure the service by editing `/Library/Application Support/ShutdownOnLan.plist`. It belongs to the `system` user, so you'll need to use `sudo` to edit it (try `sudo nano /Library/Application\ Support/ShutdownOnLan/ShutDownOnLan.plist`). 
+3. Once the installer is finished, you can configure the service with `sudo /Library/Services/shutdownonlan set` (for instance, `sudo /Library/Services/shutdownonlan set --ip-address 10.0.1.100 --secret 'correct horse'`). See details on each setting above.
 4. Once settings are in place, restart the service by running:
 ```
 sudo launchctl stop com.jkmassel.shutdownonlan
 sudo launchctl start com.jkmassel.shutdownonlan
 ```
+
+The configuration is stored in the `com.jkmassel.shutdownonlan` preferences domain, in `/Library/Preferences/com.jkmassel.shutdownonlan.plist`. Only root can read it, because it holds the secret. It can also be changed with `defaults` – note that `addresses` and `allowed_sources` are arrays:
+
+```
+sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan port_number -int 53632
+sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan addresses -array 10.0.1.100
+sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan secret 'correct horse'
+sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan allowed_sources -array 10.0.1.50
+```
+
+`defaults` leaves the file readable by every user – even `defaults read` does this – so restart the service afterwards, which restricts it to root again. To check the current settings, use `sudo /Library/Services/shutdownonlan get` instead.
+
+To manage a fleet of Macs, deploy the same keys in a configuration profile for the `com.jkmassel.shutdownonlan` domain using your MDM. Managed values take precedence over local ones, and `shutdown-on-lan set` refuses to change them. Profiles are readable by any local user, so consider leaving `secret` out of the profile and setting it on each machine instead.
+
+_Earlier versions stored the configuration in `/Library/Application Support/ShutdownOnLan/ShutDownOnLan.plist`. It's imported automatically when the service starts, then deleted._
 
 #### Linux
 Packages are provided for `x86_64` and `aarch64` (for instance, a Raspberry Pi):

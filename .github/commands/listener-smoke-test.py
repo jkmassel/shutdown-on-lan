@@ -3,8 +3,9 @@
 
 These only ever send *wrong* secrets – the real one would shut the machine down.
 
-On Linux this must run as root, because the configuration lives in /etc. On Windows it must run as an
-administrator, because the configuration lives in HKEY_LOCAL_MACHINE.
+On macOS and Linux this must run as root, because the configuration lives in the system-wide preferences
+domain and /etc respectively. On Windows it must run as an administrator, because the configuration lives in
+HKEY_LOCAL_MACHINE.
 """
 
 import os
@@ -23,10 +24,6 @@ WORKDIR = Path(tempfile.mkdtemp(prefix="shutdown-on-lan-"))
 SECRET = "correct-horse-" + secrets.token_hex(16)
 
 ENV = dict(os.environ)
-if sys.platform == "darwin":
-    # Non-root configuration lives under $HOME, so isolate it
-    ENV["HOME"] = str(WORKDIR)
-    (WORKDIR / "Library" / "Application Support").mkdir(parents=True)
 
 logs = []
 
