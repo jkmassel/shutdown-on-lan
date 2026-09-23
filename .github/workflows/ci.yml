@@ -34,14 +34,18 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.x'
-    # Linux stores its configuration in /etc, so this needs root. The other runners are already privileged enough.
+    - name: Test macOS preferences
+      if: runner.os == 'macOS'
+      run: sudo .github/commands/test-macos-preferences.sh
+    # macOS and Linux store their configuration system-wide, so this needs root. The Windows runner is
+    # already privileged enough.
     - name: Smoke test listener
       shell: bash
       run: |
-        if [ "$RUNNER_OS" = "Linux" ]; then
-          sudo "$(command -v python)" .github/commands/listener-smoke-test.py
-        else
+        if [ "$RUNNER_OS" = "Windows" ]; then
           python .github/commands/listener-smoke-test.py
+        else
+          sudo "$(command -v python)" .github/commands/listener-smoke-test.py
         fi
 
   linux-packages:

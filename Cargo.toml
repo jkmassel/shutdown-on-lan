@@ -33,9 +33,8 @@ windows-service = "0.8.1"
 toml = "1.1.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-plist = "1.10"
-dirs = "7.0"
-whoami = "2"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
 
 # Linux packages, built by `build/linux/build-packages.sh`
 [package.metadata.deb]
