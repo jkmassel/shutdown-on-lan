@@ -279,8 +279,24 @@ impl AppConfiguration {
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::info!("Looking up configuration");
+        Self::fetch_from(&Registry::with_default_root_key()?)
+    }
 
-        let registry = Registry::with_default_root_key()?;
+    pub fn save(&self) -> Result<(), ConfigurationError> {
+        self.save_to(&Registry::with_default_root_key()?)
+    }
+
+    pub fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
+        Registry::with_default_root_key()?;
+        Ok(())
+    }
+
+    pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
+        log::info!("Checking whether configuration needs to be created");
+        Self::write_missing_defaults(&Registry::with_default_root_key()?)
+    }
+
+    fn fetch_from(registry: &Registry) -> Result<AppConfiguration, ConfigurationError> {
         let ips_string = registry.read_string(ConfigurationRegistryKeys::IpAddress)?;
 
         Ok(AppConfiguration {
@@ -300,9 +316,7 @@ impl AppConfiguration {
         })
     }
 
-    pub fn save(&self) -> Result<(), ConfigurationError> {
-        let registry = Registry::with_default_root_key()?;
-
+    fn save_to(&self, registry: &Registry) -> Result<(), ConfigurationError> {
         let joined_addresses = format_addresses(&self.addresses);
         registry.write_string(ConfigurationRegistryKeys::IpAddress, &joined_addresses)?;
         log::debug!("Set IP Addresses to {}", &joined_addresses);
@@ -321,17 +335,9 @@ impl AppConfiguration {
         Ok(())
     }
 
-    pub fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
-        Registry::with_default_root_key()?;
-        Ok(())
-    }
-
     /// Writes defaults for any values that are missing from the registry. Existing values are never
-    /// overwritten – if one of them can't be read, that's reported by `fetch` instead.
-    pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
-        log::info!("Checking whether configuration needs to be created");
-
-        let registry = Registry::with_default_root_key()?;
+    /// overwritten – if one of them exists but can't be read, that's reported as an error instead.
+    fn write_missing_defaults(registry: &Registry) -> Result<(), ConfigurationError> {
         let defaults = AppConfiguration::default();
 
         if !registry.contains::<String>(ConfigurationRegistryKeys::IpAddress)? {
@@ -447,11 +453,17 @@ struct Registry {
 #[cfg(windows)]
 impl Registry {
     fn with_default_root_key() -> Result<Registry, ConfigurationError> {
-        Registry::with_root_key(PathBuf::from("SOFTWARE").join("ShutdownOnLan"))
+        Registry::with_root_key(
+            winreg::enums::HKEY_LOCAL_MACHINE,
+            PathBuf::from("SOFTWARE").join("ShutdownOnLan"),
+        )
     }
 
-    fn with_root_key(path: PathBuf) -> Result<Registry, ConfigurationError> {
-        let (key, disposition) = RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+    fn with_root_key(
+        predefined_key: winreg::HKEY,
+        path: PathBuf,
+    ) -> Result<Registry, ConfigurationError> {
+        let (key, disposition) = RegKey::predef(predefined_key)
             .create_subkey(&path)
             .map_err(ConfigurationError::RegistryUnavailable)?;
 
@@ -758,5 +770,150 @@ mod tests {
             .unwrap()
             .allowed_sources
             .is_empty());
+    }
+
+    /// A registry key under `HKEY_CURRENT_USER` (so no admin rights are needed) that's deleted when
+    /// the test finishes.
+    #[cfg(windows)]
+    struct TestRegistry {
+        path: PathBuf,
+        registry: Registry,
+    }
+
+    #[cfg(windows)]
+    impl TestRegistry {
+        fn new(name: &str) -> TestRegistry {
+            let path = PathBuf::from("Software").join(format!(
+                "ShutdownOnLan-Test-{}-{}",
+                std::process::id(),
+                name
+            ));
+            let registry =
+                Registry::with_root_key(winreg::enums::HKEY_CURRENT_USER, path.clone()).unwrap();
+
+            TestRegistry { path, registry }
+        }
+
+        fn custom_configuration() -> AppConfiguration {
+            let mut configuration = AppConfiguration {
+                port_number: 12345,
+                ..AppConfiguration::default()
+            };
+            configuration.set_addresses("10.0.1.100").unwrap();
+            configuration
+                .set_secret("custom secret".to_string())
+                .unwrap();
+            configuration.set_allowed_sources("10.0.1.50").unwrap();
+            configuration
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for TestRegistry {
+        fn drop(&mut self) {
+            let _ = RegKey::predef(winreg::enums::HKEY_CURRENT_USER).delete_subkey_all(&self.path);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_registry_round_trip() {
+        let test = TestRegistry::new("round-trip");
+        let configuration = TestRegistry::custom_configuration();
+
+        configuration.save_to(&test.registry).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry).unwrap(),
+            configuration
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_empty_registry_is_filled_with_defaults() {
+        let test = TestRegistry::new("empty");
+
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry).unwrap(),
+            AppConfiguration::default()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_upgraded_registry_gets_empty_allowed_sources() {
+        let test = TestRegistry::new("upgrade");
+        let configuration = TestRegistry::custom_configuration();
+
+        // Configurations written by older versions don't have `allowed_sources`
+        configuration.save_to(&test.registry).unwrap();
+        test.registry
+            .root_key
+            .delete_value(ConfigurationRegistryKeys::AllowedSources)
+            .unwrap();
+
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
+
+        assert_eq!(
+            test.registry
+                .read_string(ConfigurationRegistryKeys::AllowedSources)
+                .unwrap(),
+            ""
+        );
+
+        let upgraded = AppConfiguration::fetch_from(&test.registry).unwrap();
+        assert!(upgraded.allowed_sources.is_empty());
+        assert!(upgraded.accepts_connections_from(&"10.0.1.99".parse().unwrap()));
+        assert_eq!(upgraded.port_number, configuration.port_number);
+        assert_eq!(upgraded.addresses, configuration.addresses);
+        assert_eq!(upgraded.secret, configuration.secret);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_only_missing_registry_values_are_restored() {
+        let test = TestRegistry::new("missing-value");
+        let configuration = TestRegistry::custom_configuration();
+
+        configuration.save_to(&test.registry).unwrap();
+        test.registry
+            .root_key
+            .delete_value(ConfigurationRegistryKeys::Port)
+            .unwrap();
+
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry).unwrap(),
+            AppConfiguration {
+                port_number: AppConfiguration::default().port_number,
+                ..configuration
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_unreadable_registry_values_are_not_overwritten() {
+        let test = TestRegistry::new("unreadable-value");
+        let configuration = TestRegistry::custom_configuration();
+
+        configuration.save_to(&test.registry).unwrap();
+
+        // The port should be a DWORD – a string can't be read as one
+        test.registry
+            .write_string(ConfigurationRegistryKeys::Port, &"not a number".to_string())
+            .unwrap();
+
+        assert!(AppConfiguration::write_missing_defaults(&test.registry).is_err());
+        assert_eq!(
+            test.registry
+                .read_string(ConfigurationRegistryKeys::Port)
+                .unwrap(),
+            "not a number"
+        );
     }
 }

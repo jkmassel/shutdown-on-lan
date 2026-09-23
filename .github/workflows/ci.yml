@@ -31,6 +31,18 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose -- --test-threads 1
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+    # Linux stores its configuration in /etc, so this needs root. The other runners are already privileged enough.
+    - name: Smoke test listener
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo "$(command -v python)" .github/commands/listener-smoke-test.py
+        else
+          python .github/commands/listener-smoke-test.py
+        fi
 
   validate-installer:
     runs-on: windows-latest
@@ -39,6 +51,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
         run: .github/commands/build-for-windows.bat
+      - name: Test Windows service
+        shell: pwsh
+        run: .github/commands/test-windows-service.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: shutdown-on-lan-windows
