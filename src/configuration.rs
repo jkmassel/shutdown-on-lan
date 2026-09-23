@@ -207,7 +207,7 @@ impl AppConfiguration {
         let string = self.to_toml()?;
 
         let path = PathBuf::from(Self::configuration_file_path());
-        std::fs::write(&path, string).map_err(|error| {
+        write_private_file(&path, string.as_bytes()).map_err(|error| {
             ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
                 path: path.into_os_string().into_string().unwrap(),
@@ -561,15 +561,34 @@ impl Plist {
         plist::to_writer_xml(&mut bytes, &configuration)
             .map_err(|_e| ConfigurationError::InvalidConfiguration)?;
 
-        // `fs::write` truncates the file – otherwise a shorter configuration would leave the tail of
-        // the previous one behind, corrupting the file.
-        std::fs::write(path, bytes).map_err(|error| {
+        write_private_file(path, &bytes).map_err(|error| {
             ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
                 path: path.display().to_string(),
             }
         })
     }
+}
+
+/// Replaces the contents of `path` with `contents`, leaving the file readable only by its owner – it
+/// holds the secret, which any local user could otherwise read.
+#[cfg(unix)]
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // Truncate the file – otherwise a shorter configuration would leave the tail of the previous one
+    // behind, corrupting the file.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    // `mode` only applies when the file is created, so also restrict a file written by an older version
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)
 }
 
 #[derive(Error, Debug)]
@@ -699,6 +718,29 @@ mod tests {
         assert!(!output.contains("Super Secret String"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_configuration_file_is_only_readable_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("shutdown-on-lan-test-{}.mode", std::process::id()));
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        write_private_file(&path, b"first").unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        // A file left readable by an older version is restricted the next time it's written
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_file(&path, b"second").unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let final_mode = mode(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(final_mode, 0o600);
+        assert_eq!(contents, b"second");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn test_writing_a_shorter_plist_replaces_the_previous_one() {
@@ -738,6 +780,16 @@ mod tests {
 
         let configuration = AppConfiguration::try_from(plist.to_vec()).unwrap();
         assert!(configuration.allowed_sources.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_packaged_configuration_matches_the_defaults() {
+        let packaged = include_str!("../build/linux/shutdown-on-lan.toml");
+        assert_eq!(
+            AppConfiguration::from_toml(packaged).unwrap(),
+            AppConfiguration::default()
+        );
     }
 
     #[cfg(target_os = "linux")]
