@@ -8,6 +8,12 @@
 	<string>/Library/Services/shutdownonlan</string>
 	<key>RunAtLoad</key>
 	<true/>
+	<!-- Restart the service if it exits with an error or crashes – launchd waits 10 seconds between attempts -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>StandardOutPath</key>
 	<string>/var/log/shutdownonlan.log</string>
 	<key>StandardErrorPath</key>

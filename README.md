@@ -24,7 +24,7 @@ On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
 
 ##### Secret
-The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on Linux, or `sudo /Library/Services/shutdownonlan get --secret` on macOS. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine!
+The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine!
 
 _The secret cannot be empty or longer than 4096 bytes._
 
@@ -35,14 +35,12 @@ _The secret cannot be empty or longer than 4096 bytes._
 4. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
 
 #### Mac
-1. Download the latest version of the application and run the installer.
+1. Download the latest version of the application and run the installer. It runs on both Apple silicon and Intel Macs.
 2. macOS may warn that the package cannot be opened because it is from an unknown developer. Right-clicking on the package and choosing "Open" will allow you to run it.
-3. Once the installer is finished, you can configure the service with `sudo /Library/Services/shutdownonlan set` (for instance, `sudo /Library/Services/shutdownonlan set --ip-address 10.0.1.100 --secret 'correct horse'`). See details on each setting above.
-4. Once settings are in place, restart the service by running:
-```
-sudo launchctl stop com.jkmassel.shutdownonlan
-sudo launchctl start com.jkmassel.shutdownonlan
-```
+3. Once the installer is finished, you can configure the service with `sudo shutdown-on-lan set` (for instance, `sudo shutdown-on-lan set --ip-address 10.0.1.100 --secret 'correct horse'`). See details on each setting above.
+4. Once settings are in place, restart the service by running `sudo launchctl kickstart -k system/com.jkmassel.shutdownonlan`. If the service stops unexpectedly, launchd restarts it after 10 seconds.
+
+The installer puts the tool in `/Library/Services/shutdownonlan`, and links it to `/usr/local/bin/shutdown-on-lan`.
 
 The port, IP addresses and allowed sources are stored in the `com.jkmassel.shutdownonlan` preferences domain, in `/Library/Preferences/com.jkmassel.shutdownonlan.plist`. They can also be changed with `defaults` – note that `addresses` and `allowed_sources` are arrays:
 
@@ -52,7 +50,7 @@ sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan addresses -a
 sudo defaults write /Library/Preferences/com.jkmassel.shutdownonlan allowed_sources -array 10.0.1.50
 ```
 
-Every user can read the preferences domain, so the secret is stored separately, in `/Library/Application Support/ShutdownOnLan/secret`, which only root can read. Use `sudo /Library/Services/shutdownonlan set --secret` to change it. If a `secret` is written to the preferences domain (for instance with `defaults write`), it's moved to the secret file the next time the service starts or the tool runs.
+Every user can read the preferences domain, so the secret is stored separately, in `/Library/Application Support/ShutdownOnLan/secret`, which only root can read. Use `sudo shutdown-on-lan set --secret` to change it. If a `secret` is written to the preferences domain (for instance with `defaults write`), it's moved to the secret file the next time the service starts or the tool runs.
 
 To manage a fleet of Macs, deploy the same keys in a configuration profile for the `com.jkmassel.shutdownonlan` domain using your MDM. Managed values take precedence over local ones, and `shutdown-on-lan set` refuses to change them. A profile can include `secret` too, but any local user can read profiles – consider leaving it out and setting the secret on each machine instead.
 

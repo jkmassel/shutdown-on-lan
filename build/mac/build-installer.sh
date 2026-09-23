@@ -1,20 +1,33 @@
 #!/bin/bash
-set -e
+#
+# Builds a universal (Apple Silicon and Intel) binary and packages it as build/mac/shutdownonlan.pkg.
+set -euo pipefail
 
-# For Debugging
-pwd
+cd "$(dirname "$0")/../.."
 
-rm -rf ./root
+TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
+BINARIES=()
+for target in "${TARGETS[@]}"; do
+    rustup target add "$target"
+    cargo build --release --target "$target"
+    BINARIES+=("target/$target/release/shutdown-on-lan")
+done
 
-mkdir -p ./root/Library/Services
-cp ../../target/release/shutdown-on-lan root/Library/Services/shutdownonlan
+# `cargo pkgid` ends with `#<version>` or `@<version>`
+PKGID="$(cargo pkgid)"
+VERSION="${PKGID##*[#@]}"
+
+cd build/mac
+rm -rf ./root shutdownonlan.pkg
+
+mkdir -p root/Library/Services
+lipo -create -output root/Library/Services/shutdownonlan "${BINARIES[@]/#/../../}"
 
 mkdir -p root/Library/LaunchDaemons
 cp com.jkmassel.shutdownonlan.plist root/Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
 
 pkgbuild --identifier "com.jkmassel.shutdownonlan" \
---root ./root \
---scripts ./scripts/ \
-shutdownonlan.pkg || exit 1
-    # --sign "Developer ID Installer: Douglas Richardson (4L84QT8KA9)" \
-
+    --version "$VERSION" \
+    --root ./root \
+    --scripts ./scripts/ \
+    shutdownonlan.pkg
