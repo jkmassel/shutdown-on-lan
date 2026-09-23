@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [ '*' ]
+    # `**` rather than `*`, which doesn't match branch names containing a `/`
+    branches: [ '**' ]
   # Every base branch, so that stacked pull requests are checked too
   pull_request:
 
