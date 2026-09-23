@@ -13,7 +13,12 @@ Allows shutting down a computer remotely with a single TCP packet via external c
 Installers are provided for Windows and macOS, which then require some configuration. By default, access is only allowed from the local machine. The following settings are available:
  
 ##### IP Address
-Customizing the IP address field allows you to specify which interfaces the service will listen on – this address should match that of the relevant interface. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
+Customizing the IP address field allows you to specify which interfaces the service will accept connections on – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list. Connections arriving on any other interface are closed without being read. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
+
+##### Allowed Sources
+Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect. As with the IP address, you should use a DHCP reservation or a static address for each client.
+
+On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 10.0.1.50`. On Windows, it's the `allowed_sources` registry value.
 
 ##### Port
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
@@ -21,7 +26,7 @@ Customizing the port field allows you to specify which port the service will lis
 ##### Secret
 The secret is the string that's sent to the machine in order to shut it down. By default, this is set to `Super Secret String`. Be sure to use a strong secret for this – anyone on the network with the port number and this secret can shut down your machine!
 
-_The secret cannot be longer than 4096 characters._
+_The secret cannot be empty or longer than 4096 bytes._
 
 #### Windows
 1. Download the latest version of the application and run the installer.
@@ -39,6 +44,18 @@ sudo launchctl stop com.jkmassel.shutdownonlan
 sudo launchctl start com.jkmassel.shutdownonlan
 ```
 
+#### Linux
+There's no installer for Linux yet. Build the binary with `cargo build --release` and run it as root. The configuration is stored in `/etc/shutdown-on-lan.toml`, which is created from defaults on first run:
+
+```toml
+port_number = 53632
+addresses = ["10.0.1.100"]
+secret = "Super Secret String"
+allowed_sources = ["10.0.1.50"]
+```
+
+You can edit it directly or use `sudo shutdown-on-lan set`. See details on each setting above.
+
 ### How to use
 
 #### Shutting Down
@@ -47,9 +64,11 @@ The service can be triggered from a remote machine by sending a string containin
 
 `echo 'Super Secret String' | nc 10.0.1.100 53632`
 
+The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the connection. Several newline-separated attempts can be sent over a single connection. After a wrong secret, further attempts from the same client address are delayed – starting at 100ms and doubling with each wrong secret, up to 5 seconds per attempt. The delay resets after 5 minutes without any attempts.
+
 #### Detecting State
 
-This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on.
+This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once – further connections are closed immediately.
 
 ### Debugging Issues
 
@@ -57,4 +76,6 @@ This service can also allow a client to maintain a connection to the socket with
 The macOS service writes error messages to `/var/log/shutdownonlan.error.log` and an audit log (including the source IP address of any remote connections) to `/var/log/shutdownonlan.log`. Additionally, if there are configuration or permission issues with the service, macOS will log them to `/var/log/system.log`.
 
 #### Windows
+The Windows service writes its log (including the source IP address of any remote connections) to `C:\ProgramData\ShutdownOnLan\shutdown-on-lan.log`.
+
 The Windows version can be run in standalone mode by running `shutdown-on-lan.exe run` from an Administrative PowerShell. This runs the same code that's used in the service, and should help debug any issues.

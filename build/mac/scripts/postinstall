@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-## Stop the process (if needed)
-launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
+## Stop the process (if needed) – this fails on first install, when it isn't loaded yet
+launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || true
 
 ## Start the process
 launchctl load -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist

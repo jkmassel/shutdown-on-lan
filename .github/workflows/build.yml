@@ -67,7 +67,7 @@ jobs:
           chmod +x build-installer.sh
           ./build-installer.sh
       - name: Upload Artifact
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
