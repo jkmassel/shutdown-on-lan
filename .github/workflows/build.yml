@@ -31,7 +31,7 @@ jobs:
       - name: Build
         run: .github/commands/build-for-windows.bat
       - name: Upload Artifact
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: shutdown-on-lan-windows-installer.exe
           path: build/windows/Bundle.exe
@@ -67,7 +67,7 @@ jobs:
           chmod +x build-installer.sh
           ./build-installer.sh
       - name: Upload Artifact
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg

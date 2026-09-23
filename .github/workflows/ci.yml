@@ -13,14 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Lint
-        run: cargo fmt --verbose && git status --porcelain
+        run: cargo fmt --check
       - name: Style
         run: rustup component add clippy && cargo clippy
 
   build:
     strategy:
       matrix:
-        platform: [macos-latest, windows-latest]
+        platform: [macos-latest, windows-latest, ubuntu-latest]
 
     runs-on: ${{ matrix.platform }}
 
@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
         run: .github/commands/build-for-windows.bat
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: shutdown-on-lan-windows
           path: build/windows
