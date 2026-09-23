@@ -21,6 +21,13 @@ echo "--- The configuration has a random secret that only root can read"
 test "$(stat -c '%a %U' /etc/shutdown-on-lan.toml)" = "600 root"
 shutdown-on-lan get --secret | grep -Eq '^Secret: [0-9a-f]{32}$'
 
+echo "--- Other users are told they need root"
+if output="$(runuser -u nobody -- shutdown-on-lan get --port 2>&1)"; then
+    echo "Expected \`get\` to fail for another user, but it printed: $output"
+    exit 1
+fi
+echo "$output" | grep -q 'try again with sudo'
+
 echo "--- Shutting down works from inside the service's sandbox"
 # `shutdown` asks systemd to power off, so check that the sandbox can still reach it. Only the unit's
 # own settings are used, not any drop-ins.

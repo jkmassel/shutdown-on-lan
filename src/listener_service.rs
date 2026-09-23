@@ -33,6 +33,10 @@ const MAX_ATTEMPT_DELAY: Duration = Duration::from_secs(5);
 const FORGET_SOURCE_AFTER: Duration = Duration::from_secs(5 * 60);
 
 pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
+    configuration
+        .validate()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+
     let listener = bind(configuration.port_number)?;
     log::info!(
         "Listening on port {} for connections to {}",
@@ -464,6 +468,17 @@ mod tests {
             !wait_for_secret(Cursor::new(b"\n".to_vec()), "", &unthrottled(), source()).unwrap()
         );
         assert!(!secrets_match(b"", b""));
+    }
+
+    #[test]
+    fn test_an_invalid_secret_is_rejected_before_listening() {
+        let configuration = AppConfiguration {
+            secret: String::new(),
+            ..AppConfiguration::default()
+        };
+
+        let error = run(&configuration).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     fn slots() -> Arc<ConnectionSlots> {

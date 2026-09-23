@@ -59,6 +59,12 @@ impl AppConfiguration {
         Ok(())
     }
 
+    /// Checks the values that can't be checked while parsing – a secret written by hand (or managed by a
+    /// configuration profile) could be empty, which would never match.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        validate_secret(&self.secret)
+    }
+
     pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
         validate_secret(&secret)?;
         self.secret = secret;
@@ -358,8 +364,13 @@ impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         let path = Self::configuration_file_path();
 
-        let string = std::fs::read_to_string(path)
-            .map_err(|error| ConfigurationError::InvalidConfigurationFile { source: error })?;
+        let string = std::fs::read_to_string(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigurationError::RequiresRoot
+            } else {
+                ConfigurationError::InvalidConfigurationFile { source: error }
+            }
+        })?;
 
         Self::from_toml(&string)
     }
@@ -369,9 +380,13 @@ impl AppConfiguration {
 
         let path = PathBuf::from(Self::configuration_file_path());
         write_private_file(&path, string.as_bytes()).map_err(|error| {
-            ConfigurationError::ConfigurationFileUnwritable {
-                source: error,
-                path: path.into_os_string().into_string().unwrap(),
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigurationError::RequiresRoot
+            } else {
+                ConfigurationError::ConfigurationFileUnwritable {
+                    source: error,
+                    path: path.into_os_string().into_string().unwrap(),
+                }
             }
         })
     }
@@ -903,23 +918,41 @@ impl Preferences {
 
 /// Replaces the contents of `path` with `contents`, leaving the file readable only by its owner – it
 /// holds the secret, which any local user could otherwise read.
+///
+/// The contents are written to a temporary file that then replaces `path`, so a crash or a full disk
+/// part-way through leaves the previous contents in place rather than an empty or truncated file.
 #[cfg(unix)]
 fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    // Truncate the file – otherwise a shorter configuration would leave the tail of the previous one
-    // behind, corrupting the file.
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(path.file_name().unwrap_or_default());
+    temporary_name.push(".tmp");
+    let temporary_path = path.with_file_name(temporary_name);
 
-    // `mode` only applies when the file is created, so also restrict a file written by an older version
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(contents)
+    let result = (|| {
+        // Truncate a temporary file left behind by an earlier attempt
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary_path)?;
+
+        // `mode` only applies when the file is created, so also restrict a leftover temporary file
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+
+        std::fs::rename(&temporary_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+
+    result
 }
 
 #[derive(Error, Debug)]
@@ -928,7 +961,7 @@ pub enum ConfigurationError {
     MissingConfigurationFile(#[from] std::io::Error),
 
     #[cfg(target_os = "linux")]
-    #[error("Contents of Configuration File Are Invalid")]
+    #[error("Unable to read the configuration file")]
     InvalidConfigurationFile { source: std::io::Error },
 
     #[cfg(target_os = "macos")]
@@ -939,7 +972,7 @@ pub enum ConfigurationError {
     #[error("The {0} preference is missing or invalid")]
     PreferenceNotReadable(&'static str),
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(windows))]
     #[error("Only root can read or change the configuration – try again with sudo")]
     RequiresRoot,
 
@@ -1130,6 +1163,27 @@ mod tests {
 
         assert_eq!(final_mode, 0o600);
         assert_eq!(contents, b"second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_writing_a_file_leaves_no_temporary_file_behind() {
+        let directory = std::env::temp_dir().join(format!(
+            "shutdown-on-lan-test-{}-atomic",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("configuration");
+
+        write_private_file(&path, b"a longer first version").unwrap();
+        write_private_file(&path, b"second").unwrap();
+
+        let contents = std::fs::read(&path).unwrap();
+        let entries = std::fs::read_dir(&directory).unwrap().count();
+        std::fs::remove_dir_all(&directory).unwrap();
+
+        assert_eq!(contents, b"second");
+        assert_eq!(entries, 1);
     }
 
     /// Storage in a temporary directory (so no root is needed) that's deleted when the test finishes. The
