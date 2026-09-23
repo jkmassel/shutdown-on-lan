@@ -44,6 +44,18 @@ sudo launchctl stop com.jkmassel.shutdownonlan
 sudo launchctl start com.jkmassel.shutdownonlan
 ```
 
+#### Linux
+There's no installer for Linux yet. Build the binary with `cargo build --release` and run it as root. The configuration is stored in `/etc/shutdown-on-lan.toml`, which is created from defaults on first run:
+
+```toml
+port_number = 53632
+addresses = ["10.0.1.100"]
+secret = "Super Secret String"
+allowed_sources = ["10.0.1.50"]
+```
+
+You can edit it directly or use `sudo shutdown-on-lan set`. See details on each setting above.
+
 ### How to use
 
 #### Shutting Down

@@ -22,14 +22,11 @@ pub const MAX_SECRET_LENGTH: usize = 4096;
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfiguration {
     pub port_number: u16,
-    // INI files can't represent lists, so store the addresses as a comma-separated string
-    #[cfg_attr(target_os = "linux", serde(with = "comma_separated_addresses"))]
     pub addresses: Vec<IpAddr>,
     pub secret: String,
     /// The client addresses allowed to connect. Empty means any client may connect.
     // Missing from configurations written by older versions, so default to allowing any client
     #[serde(default)]
-    #[cfg_attr(target_os = "linux", serde(with = "comma_separated_addresses"))]
     pub allowed_sources: Vec<IpAddr>,
 }
 
@@ -102,26 +99,6 @@ pub fn format_addresses(addresses: &[IpAddr]) -> String {
         .map(|ip| ip.to_string())
         .collect::<Vec<String>>()
         .join(",")
-}
-
-#[cfg(target_os = "linux")]
-mod comma_separated_addresses {
-    use serde::{de::Error, Deserialize, Deserializer, Serializer};
-    use std::net::IpAddr;
-
-    pub fn serialize<S: Serializer>(
-        addresses: &[IpAddr],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&super::format_addresses(addresses))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<IpAddr>, D::Error> {
-        let string = String::deserialize(deserializer)?;
-        super::parse_optional_addresses(&string).map_err(D::Error::custom)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -218,18 +195,16 @@ impl AppConfiguration {
 #[cfg(target_os = "linux")]
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
-        extern crate serde_ini;
-
         let path = Self::configuration_file_path();
 
         let string = std::fs::read_to_string(path)
             .map_err(|error| ConfigurationError::InvalidConfigurationFile { source: error })?;
 
-        Self::from_ini(&string)
+        Self::from_toml(&string)
     }
 
     pub fn save(&self) -> Result<(), ConfigurationError> {
-        let string = self.to_ini()?;
+        let string = self.to_toml()?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         std::fs::write(&path, string).map_err(|error| {
@@ -240,12 +215,12 @@ impl AppConfiguration {
         })
     }
 
-    fn from_ini(string: &str) -> Result<AppConfiguration, ConfigurationError> {
-        serde_ini::from_str(string).map_err(ConfigurationError::CorruptIniConfigurationFile)
+    fn from_toml(string: &str) -> Result<AppConfiguration, ConfigurationError> {
+        toml::from_str(string).map_err(ConfigurationError::CorruptTomlConfigurationFile)
     }
 
-    fn to_ini(&self) -> Result<String, ConfigurationError> {
-        serde_ini::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)
+    fn to_toml(&self) -> Result<String, ConfigurationError> {
+        toml::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)
     }
 
     fn configuration_storage_path() -> String {
@@ -254,7 +229,7 @@ impl AppConfiguration {
 
     fn configuration_file_path() -> String {
         PathBuf::from(Self::configuration_storage_path())
-            .join("ShutDownOnLan")
+            .join("shutdown-on-lan.toml")
             .into_os_string()
             .to_str()
             .unwrap()
@@ -600,7 +575,7 @@ pub enum ConfigurationError {
 
     #[cfg(target_os = "linux")]
     #[error("Contents of Configuration File Are Invalid")]
-    CorruptIniConfigurationFile(#[source] serde_ini::de::Error),
+    CorruptTomlConfigurationFile(#[source] toml::de::Error),
 
     #[error("The configuration file in memory can't be converted to an on-disk representation")]
     InvalidConfiguration,
@@ -755,27 +730,31 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn test_ini_round_trip() {
+    fn test_toml_round_trip() {
         let mut configuration = AppConfiguration::default();
         configuration.set_addresses("10.0.1.100,::1").unwrap();
         configuration.set_allowed_sources("10.0.1.50").unwrap();
 
-        let ini = configuration.to_ini().unwrap();
-        assert!(ini.contains("addresses=10.0.1.100,::1"));
-        assert!(ini.contains("allowed_sources=10.0.1.50"));
-        assert_eq!(AppConfiguration::from_ini(&ini).unwrap(), configuration);
+        let toml = configuration.to_toml().unwrap();
+        assert!(toml.contains(r#"addresses = ["10.0.1.100", "::1"]"#));
+        assert!(toml.contains(r#"allowed_sources = ["10.0.1.50"]"#));
+        assert_eq!(AppConfiguration::from_toml(&toml).unwrap(), configuration);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn test_ini_without_allowed_sources_accepts_any_client() {
+    fn test_toml_without_allowed_sources_accepts_any_client() {
         let configuration = AppConfiguration::default();
 
-        let ini = configuration.to_ini().unwrap();
-        assert_eq!(AppConfiguration::from_ini(&ini).unwrap(), configuration);
+        let toml = configuration.to_toml().unwrap();
+        assert_eq!(AppConfiguration::from_toml(&toml).unwrap(), configuration);
 
-        let legacy = "port_number=53632\naddresses=127.0.0.1\nsecret=Super Secret String\n";
-        assert!(AppConfiguration::from_ini(legacy)
+        let hand_written = r#"
+            port_number = 53632
+            addresses = ["127.0.0.1"]
+            secret = "Super Secret String"
+        "#;
+        assert!(AppConfiguration::from_toml(hand_written)
             .unwrap()
             .allowed_sources
             .is_empty());
