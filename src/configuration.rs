@@ -923,9 +923,15 @@ mod tests {
 
         AppConfiguration::write_missing_defaults(&test.registry).unwrap();
 
+        // Every default configuration has a different random secret, so compare everything else
+        let configuration = AppConfiguration::fetch_from(&test.registry).unwrap();
+        assert_eq!(configuration.secret.len(), 32);
         assert_eq!(
-            AppConfiguration::fetch_from(&test.registry).unwrap(),
-            AppConfiguration::default()
+            configuration,
+            AppConfiguration {
+                secret: configuration.secret.clone(),
+                ..AppConfiguration::default()
+            }
         );
     }
 
