@@ -1,19 +1,14 @@
-extern crate exitcode;
-
 #[cfg(target_os = "macos")]
 extern crate plist;
 
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{AddrParseError, IpAddr, Ipv4Addr};
 use std::net::{SocketAddr, ToSocketAddrs};
+#[cfg(not(windows))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::vec;
 use thiserror::Error;
-
-#[cfg(not(windows))]
-use std::io::Read;
-use std::io::Write;
 
 #[cfg(windows)]
 use winreg::RegKey;
@@ -21,9 +16,14 @@ use winreg::RegKey;
 #[cfg(windows)]
 use winreg::enums::RegDisposition;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+/// The longest secret we'll accept, in bytes.
+pub const MAX_SECRET_LENGTH: usize = 4096;
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfiguration {
     pub port_number: u16,
+    // INI files can't represent lists, so store the addresses as a comma-separated string
+    #[cfg_attr(target_os = "linux", serde(with = "comma_separated_addresses"))]
     pub addresses: Vec<IpAddr>,
     pub secret: String,
 }
@@ -41,17 +41,61 @@ pub trait AppConfigurationStorage {
 }
 
 impl AppConfiguration {
-    pub fn validate() -> Result<(), ConfigurationError> {
+    /// Reads the configuration, creating it from defaults first if needed.
+    pub fn load() -> Result<AppConfiguration, ConfigurationError> {
         Self::create_configuration_if_not_exists()?;
-        AppConfiguration::fetch()?;
+        Self::fetch()
+    }
 
+    pub fn set_addresses(&mut self, string: &str) -> Result<(), AddrParseError> {
+        self.addresses = parse_addresses(string)?;
         Ok(())
     }
 
-    pub fn set_addresses(&mut self, string: String) {
-        let ips_list: Vec<&str> = string.split(',').collect();
+    pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
+        if secret.is_empty() || secret.len() > MAX_SECRET_LENGTH {
+            return Err(ConfigurationError::InvalidSecret);
+        }
 
-        self.addresses = ips_list.iter().filter_map(|&ip| ip.parse().ok()).collect();
+        self.secret = secret;
+        Ok(())
+    }
+
+    /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
+    pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
+        self.addresses.contains(ip)
+    }
+}
+
+pub fn parse_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseError> {
+    string.split(',').map(|ip| ip.trim().parse()).collect()
+}
+
+pub fn format_addresses(addresses: &[IpAddr]) -> String {
+    addresses
+        .iter()
+        .map(|ip| ip.to_string())
+        .collect::<Vec<String>>()
+        .join(",")
+}
+
+#[cfg(target_os = "linux")]
+mod comma_separated_addresses {
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+    use std::net::IpAddr;
+
+    pub fn serialize<S: Serializer>(
+        addresses: &[IpAddr],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::format_addresses(addresses))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<IpAddr>, D::Error> {
+        let string = String::deserialize(deserializer)?;
+        super::parse_addresses(&string).map_err(D::Error::custom)
     }
 }
 
@@ -59,7 +103,6 @@ impl AppConfiguration {
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::debug!("Fetching App Configuration");
-        Self::create_configuration_if_not_exists()?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         Plist::read_configuration(&path)
@@ -68,7 +111,7 @@ impl AppConfiguration {
     pub fn save(&self) -> Result<(), ConfigurationError> {
         let path = PathBuf::from(Self::configuration_file_path());
         log::debug!("Writing configuration to {:?}", path);
-        Plist::write_configuration(self, path)
+        Plist::write_configuration(self, &path)
     }
 
     fn configuration_storage_path() -> String {
@@ -157,24 +200,27 @@ impl AppConfiguration {
         let string = std::fs::read_to_string(path)
             .map_err(|error| ConfigurationError::InvalidConfigurationFile { source: error })?;
 
-        let config: AppConfiguration =
-            serde_ini::from_str(&string).expect("Invalid app configuration");
-
-        Ok(config)
+        Self::from_ini(&string)
     }
 
     pub fn save(&self) -> Result<(), ConfigurationError> {
-        extern crate serde_ini;
-        let string =
-            serde_ini::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)?;
+        let string = self.to_ini()?;
 
         let path = PathBuf::from(Self::configuration_file_path());
         std::fs::write(&path, string).map_err(|error| {
-            ConfigurationError::ConfigurationStorageUnwritable {
+            ConfigurationError::ConfigurationFileUnwritable {
                 source: error,
                 path: path.into_os_string().into_string().unwrap(),
             }
         })
+    }
+
+    fn from_ini(string: &str) -> Result<AppConfiguration, ConfigurationError> {
+        serde_ini::from_str(string).map_err(ConfigurationError::CorruptIniConfigurationFile)
+    }
+
+    fn to_ini(&self) -> Result<String, ConfigurationError> {
+        serde_ini::to_string(self).map_err(|_e| ConfigurationError::InvalidConfiguration)
     }
 
     fn configuration_storage_path() -> String {
@@ -236,23 +282,20 @@ impl AppConfiguration {
 
         let registry = Registry::with_default_root_key()?;
         let ips_string = registry.read_string(ConfigurationRegistryKeys::IpAddress)?;
-        let ips_list: Vec<&str> = ips_string.split(',').collect();
-
-        let ip_addresses: Vec<IpAddr> = ips_list.iter().filter_map(|&ip| ip.parse().ok()).collect();
 
         Ok(AppConfiguration {
             port_number: registry.read_u16(ConfigurationRegistryKeys::Port)?,
-            addresses: ip_addresses,
+            addresses: parse_addresses(&ips_string).map_err(|_error| {
+                ConfigurationError::RegistryKeyNotReadable(ConfigurationRegistryKeys::IpAddress)
+            })?,
             secret: registry.read_string(ConfigurationRegistryKeys::Secret)?,
         })
     }
 
-    pub fn save(self) -> Result<(), ConfigurationError> {
+    pub fn save(&self) -> Result<(), ConfigurationError> {
         let registry = Registry::with_default_root_key()?;
 
-        let addresses: Vec<String> = self.addresses.iter().map(|ip| ip.to_string()).collect();
-
-        let joined_addresses = addresses.join(",");
+        let joined_addresses = format_addresses(&self.addresses);
         registry.write_string(ConfigurationRegistryKeys::IpAddress, &joined_addresses)?;
         log::debug!("Set IP Addresses to {}", &joined_addresses);
 
@@ -261,7 +304,7 @@ impl AppConfiguration {
         log::debug!("Set Port to {}", u32_port_number);
 
         registry.write_string(ConfigurationRegistryKeys::Secret, &self.secret)?;
-        log::debug!("Set secret to {}", self.secret);
+        log::debug!("Set secret");
 
         Ok(())
     }
@@ -271,19 +314,31 @@ impl AppConfiguration {
         Ok(())
     }
 
+    /// Writes defaults for any values that are missing from the registry. Existing values are never
+    /// overwritten – if one of them can't be read, that's reported by `fetch` instead.
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::info!("Checking whether configuration needs to be created");
 
-        if let Ok(existing_configuration) = Self::fetch() {
-            log::info!("Found existing configuration – skipping creation");
-            log::info!("Configuration: {:?}", existing_configuration);
-            return Ok(());
+        let registry = Registry::with_default_root_key()?;
+        let defaults = AppConfiguration::default();
+
+        if !registry.contains::<String>(ConfigurationRegistryKeys::IpAddress)? {
+            log::info!("Writing default IP addresses to registry");
+            registry.write_string(
+                ConfigurationRegistryKeys::IpAddress,
+                &format_addresses(&defaults.addresses),
+            )?;
         }
 
-        log::info!("Writing default configuration to registry");
-        let configuration = AppConfiguration::default();
-        configuration.save()?;
-        log::info!("Default configuration written to registry");
+        if !registry.contains::<u32>(ConfigurationRegistryKeys::Port)? {
+            log::info!("Writing default port to registry");
+            registry.write_u32(ConfigurationRegistryKeys::Port, defaults.port_number as u32)?;
+        }
+
+        if !registry.contains::<String>(ConfigurationRegistryKeys::Secret)? {
+            log::info!("Writing default secret to registry");
+            registry.write_string(ConfigurationRegistryKeys::Secret, &defaults.secret)?;
+        }
 
         Ok(())
     }
@@ -299,6 +354,17 @@ impl Default for AppConfiguration {
     }
 }
 
+// Implemented by hand so the secret never ends up in a log
+impl std::fmt::Debug for AppConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfiguration")
+            .field("port_number", &self.port_number)
+            .field("addresses", &self.addresses)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
 impl ToSocketAddrs for AppConfiguration {
     type Iter = vec::IntoIter<SocketAddr>;
 
@@ -310,6 +376,8 @@ impl ToSocketAddrs for AppConfiguration {
             self.port_number
         );
 
+        // Listen on every interface so the service works even if the configured interfaces aren't up yet
+        // when it starts. Connections to interfaces that aren't in `addresses` are rejected after `accept`.
         let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
         addresses.push(SocketAddr::from((address, self.port_number)));
@@ -321,7 +389,7 @@ impl ToSocketAddrs for AppConfiguration {
 
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy)]
-enum ConfigurationRegistryKeys {
+pub enum ConfigurationRegistryKeys {
     IpAddress,
     Port,
     Secret,
@@ -353,13 +421,13 @@ struct Registry {
 #[cfg(windows)]
 impl Registry {
     fn with_default_root_key() -> Result<Registry, ConfigurationError> {
-        Registry::with_root_key(Path::new("SOFTWARE").join("ShutdownOnLan"))
+        Registry::with_root_key(PathBuf::from("SOFTWARE").join("ShutdownOnLan"))
     }
 
     fn with_root_key(path: PathBuf) -> Result<Registry, ConfigurationError> {
         let (key, disposition) = RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
             .create_subkey(&path)
-            .expect("Failed to read app configuration");
+            .map_err(ConfigurationError::RegistryUnavailable)?;
 
         match disposition {
             RegDisposition::REG_CREATED_NEW_KEY => {
@@ -373,11 +441,23 @@ impl Registry {
         Ok(Registry { root_key: key })
     }
 
+    /// Whether `key` has a value. Errors other than the value being absent are reported, so that a
+    /// value that exists but can't be read isn't mistaken for a missing one and overwritten.
+    fn contains<T: winreg::types::FromRegValue>(
+        &self,
+        key: ConfigurationRegistryKeys,
+    ) -> Result<bool, ConfigurationError> {
+        match self.root_key.get_value::<T, _>(key) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_error) => Err(ConfigurationError::RegistryKeyNotReadable(key)),
+        }
+    }
+
     fn read_string(&self, key: ConfigurationRegistryKeys) -> Result<String, ConfigurationError> {
         self.root_key
             .get_value(key)
             .map_err(|_error| ConfigurationError::RegistryKeyNotReadable(key))
-            .map(|regval: String| regval as String)
     }
 
     fn read_u16(&self, key: ConfigurationRegistryKeys) -> Result<u16, ConfigurationError> {
@@ -390,7 +470,6 @@ impl Registry {
         self.root_key
             .get_value(key)
             .map_err(|_error| ConfigurationError::RegistryKeyNotReadable(key))
-            .map(|regval: u32| regval as u32)
     }
 
     fn write_string(
@@ -398,10 +477,9 @@ impl Registry {
         key: ConfigurationRegistryKeys,
         value: &String,
     ) -> Result<(), ConfigurationError> {
-        match self.root_key.set_value(key, value) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(ConfigurationError::RegistryKeyNotWritable(key)),
-        }
+        self.root_key
+            .set_value(key, value)
+            .map_err(|_error| ConfigurationError::RegistryKeyNotWritable(key))
     }
 
     fn write_u32(
@@ -409,10 +487,9 @@ impl Registry {
         key: ConfigurationRegistryKeys,
         value: u32,
     ) -> Result<(), ConfigurationError> {
-        match self.root_key.set_value(key, &value) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(ConfigurationError::RegistryKeyNotWritable(key)),
-        }
+        self.root_key
+            .set_value(key, &value)
+            .map_err(|_error| ConfigurationError::RegistryKeyNotWritable(key))
     }
 }
 
@@ -434,44 +511,26 @@ struct Plist {}
 #[cfg(target_os = "macos")]
 impl Plist {
     pub fn read_configuration(path: &Path) -> Result<AppConfiguration, ConfigurationError> {
-        let file =
-            std::fs::File::open(path).map_err(ConfigurationError::MissingConfigurationFile)?;
-
-        let mut reader = std::io::BufReader::new(file);
-        let mut bytes = Vec::new();
-
-        // Read the file into `bytes`
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(|error| ConfigurationError::InvalidConfigurationFile { source: error })?;
-
+        let bytes = std::fs::read(path).map_err(ConfigurationError::MissingConfigurationFile)?;
         AppConfiguration::try_from(bytes)
     }
 
     pub fn write_configuration(
         configuration: &AppConfiguration,
-        path: PathBuf,
+        path: &Path,
     ) -> Result<(), ConfigurationError> {
-        // `open `doesn't create the file if needed, so we need to
-        if !path.exists() {
-            let _ = std::fs::File::create(&path)?;
-        }
-
-        let mut file_handle = std::fs::File::options()
-            .write(true)
-            .open(path)
-            .map_err(|_e| ConfigurationError::ConfigurationFileUnwritable)?;
-
-        let mut buf = std::io::BufWriter::new(Vec::new());
-        plist::to_writer_xml(&mut buf, &configuration)
+        let mut bytes = Vec::new();
+        plist::to_writer_xml(&mut bytes, &configuration)
             .map_err(|_e| ConfigurationError::InvalidConfiguration)?;
 
-        let bytes = buf.into_inner().unwrap();
-        file_handle
-            .write_all(&bytes)
-            .map_err(|_e| ConfigurationError::InvalidConfiguration)?;
-
-        Ok(())
+        // `fs::write` truncates the file – otherwise a shorter configuration would leave the tail of
+        // the previous one behind, corrupting the file.
+        std::fs::write(path, bytes).map_err(|error| {
+            ConfigurationError::ConfigurationFileUnwritable {
+                source: error,
+                path: path.display().to_string(),
+            }
+        })
     }
 }
 
@@ -480,6 +539,7 @@ pub enum ConfigurationError {
     #[error("No Configuration File at Path")]
     MissingConfigurationFile(#[from] std::io::Error),
 
+    #[cfg(target_os = "linux")]
     #[error("Contents of Configuration File Are Invalid")]
     InvalidConfigurationFile { source: std::io::Error },
 
@@ -487,15 +547,26 @@ pub enum ConfigurationError {
     #[error("Contents of Configuration File Are Invalid")]
     CorruptConfigurationFile(#[from] plist::Error),
 
+    #[cfg(target_os = "linux")]
+    #[error("Contents of Configuration File Are Invalid")]
+    CorruptIniConfigurationFile(#[source] serde_ini::de::Error),
+
     #[error("The configuration file in memory can't be converted to an on-disk representation")]
     InvalidConfiguration,
 
+    #[error("The secret must be between 1 and {} bytes long", MAX_SECRET_LENGTH)]
+    InvalidSecret,
+
     #[cfg(windows)]
-    #[error("Unable to read to a registry key")]
+    #[error("Unable to open the configuration registry key")]
+    RegistryUnavailable(#[source] std::io::Error),
+
+    #[cfg(windows)]
+    #[error("Unable to read registry value {0:?}")]
     RegistryKeyNotReadable(ConfigurationRegistryKeys),
 
     #[cfg(windows)]
-    #[error("Unable to write to a registry key")]
+    #[error("Unable to write registry value {0:?}")]
     RegistryKeyNotWritable(ConfigurationRegistryKeys),
 
     #[error("Unable to write to configuration storage directory")]
@@ -504,8 +575,99 @@ pub enum ConfigurationError {
         path: String,
     },
 
-    #[error("Unable to write to configuration file: {}", exitcode::CANTCREAT)]
-    ConfigurationFileUnwritable,
-    // #[error("Unable to write configuration – it is not valid")]
-    // ConfigurationSerializationError,
+    #[error("Unable to write to configuration file at {path}")]
+    ConfigurationFileUnwritable {
+        source: std::io::Error,
+        path: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_addresses_accepts_a_comma_separated_list() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100, ::1").unwrap();
+
+        assert_eq!(
+            configuration.addresses,
+            vec![
+                "10.0.1.100".parse::<IpAddr>().unwrap(),
+                "::1".parse::<IpAddr>().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_set_addresses_rejects_invalid_addresses_without_modifying_the_configuration() {
+        let mut configuration = AppConfiguration::default();
+
+        assert!(configuration
+            .set_addresses("10.0.1.100,10.0.1.300")
+            .is_err());
+        assert!(configuration.set_addresses("").is_err());
+        assert_eq!(
+            configuration.addresses,
+            AppConfiguration::default().addresses
+        );
+    }
+
+    #[test]
+    fn test_set_secret_enforces_length_limits() {
+        let mut configuration = AppConfiguration::default();
+
+        assert!(configuration.set_secret(String::new()).is_err());
+        assert!(configuration
+            .set_secret("a".repeat(MAX_SECRET_LENGTH + 1))
+            .is_err());
+        assert!(configuration
+            .set_secret("a".repeat(MAX_SECRET_LENGTH))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_default_configuration_only_accepts_connections_on_loopback() {
+        let configuration = AppConfiguration::default();
+
+        assert!(configuration.accepts_connections_on(&"127.0.0.1".parse().unwrap()));
+        assert!(!configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_debug_output_does_not_include_the_secret() {
+        let output = format!("{:?}", AppConfiguration::default());
+        assert!(!output.contains("Super Secret String"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_writing_a_shorter_plist_replaces_the_previous_one() {
+        let path =
+            std::env::temp_dir().join(format!("shutdown-on-lan-test-{}.plist", std::process::id()));
+
+        let mut configuration = AppConfiguration::default();
+        configuration.set_secret("a".repeat(1024)).unwrap();
+        Plist::write_configuration(&configuration, &path).unwrap();
+
+        configuration.set_secret("short".to_string()).unwrap();
+        Plist::write_configuration(&configuration, &path).unwrap();
+
+        let result = Plist::read_configuration(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(result.unwrap(), configuration);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_ini_round_trip() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100,::1").unwrap();
+
+        let ini = configuration.to_ini().unwrap();
+        assert!(ini.contains("addresses=10.0.1.100,::1"));
+        assert_eq!(AppConfiguration::from_ini(&ini).unwrap(), configuration);
+    }
 }

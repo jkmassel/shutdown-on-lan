@@ -3,12 +3,12 @@ extern crate log;
 extern crate simplelog;
 extern crate system_shutdown;
 
-use crate::configuration::AppConfiguration;
+use crate::configuration::{format_addresses, AppConfiguration};
 use anyhow::{Context, Result};
 use simplelog::*;
-use std::fs::File;
+use std::fs::OpenOptions;
+use std::path::PathBuf;
 use std::process;
-use std::vec;
 use structopt::StructOpt;
 
 mod configuration;
@@ -51,9 +51,9 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    init_logging();
-
     let args = AppArguments::from_args();
+
+    init_logging(args.command.is_none());
 
     match args.command {
         None => run()?,
@@ -62,19 +62,14 @@ fn main() -> Result<()> {
             ip_address,
             secret,
         }) => {
-            log::debug!(
-                "Updating Configuartion: {:?},{:?},{:?}",
-                port,
-                ip_address,
-                secret
-            );
-
-            let mut config = get_app_configuration()?;
+            log::debug!("Updating Configuration: {:?},{:?}", port, ip_address);
 
             if port.is_none() && ip_address.is_none() && secret.is_none() {
                 println!("You must specify an option to set. Use --help to list options.");
                 process::exit(exitcode::USAGE);
             }
+
+            let mut config = get_app_configuration()?;
 
             if let Some(port) = port {
                 println!("Set port {port:?}");
@@ -82,13 +77,15 @@ fn main() -> Result<()> {
             }
 
             if let Some(ip_address) = ip_address {
-                println!("Set IP Addresses: {ip_address:?}");
-                config.set_addresses(ip_address);
+                config
+                    .set_addresses(&ip_address)
+                    .with_context(|| format!("Invalid IP address list: {ip_address:?}"))?;
+                println!("Set IP Addresses: {}", format_addresses(&config.addresses));
             }
 
             if let Some(secret) = secret {
-                println!("Set Secret: {secret:?}");
-                config.secret = secret;
+                config.set_secret(secret)?;
+                println!("Secret updated");
             }
 
             log::debug!("Saving Configuration");
@@ -105,7 +102,10 @@ fn main() -> Result<()> {
             }
 
             if ip_addresses {
-                println!("Listening IP Addresses: {:?}", config.addresses);
+                println!(
+                    "Listening IP Addresses: {}",
+                    format_addresses(&config.addresses)
+                );
             }
         }
         Some(Command::Run {}) => {
@@ -117,41 +117,74 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn validate_app_configuration() -> Result<()> {
-    AppConfiguration::validate().context("Unable to validate the configuration file")
-}
-
 fn get_app_configuration() -> Result<AppConfiguration> {
-    AppConfiguration::fetch().context("Unable to read the configuration file")
+    AppConfiguration::load().context("Unable to read the configuration file")
 }
 
-fn init_logging() {
-    if cfg!(debug_assertions) {
-        CombinedLogger::init(vec![
-            TermLogger::new(
-                LevelFilter::Debug,
-                Config::default(),
-                TerminalMode::Mixed,
-                ColorChoice::Auto,
-            ),
-            WriteLogger::new(
-                LevelFilter::Debug,
-                Config::default(),
-                File::create("shutdown-on-lan.log").unwrap(),
-            ),
-        ])
-        .unwrap();
+fn init_logging(running_as_service: bool) {
+    let level = if cfg!(debug_assertions) {
+        LevelFilter::Debug
     } else {
-        CombinedLogger::init(vec![TermLogger::new(
-            LevelFilter::Info,
-            Config::default(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        )])
-        .unwrap();
+        LevelFilter::Info
+    };
+
+    let mut loggers: Vec<Box<dyn SharedLogger>> = vec![TermLogger::new(
+        level,
+        Config::default(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )];
+
+    if let Some(path) = log_file_path(running_as_service) {
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => loggers.push(WriteLogger::new(level, Config::default(), file)),
+            Err(error) => eprintln!("Unable to open log file at {}: {}", path.display(), error),
+        }
     }
 
-    log::debug!("File Logger Initialized");
+    if let Err(error) = CombinedLogger::init(loggers) {
+        eprintln!("Unable to initialize logging: {}", error);
+    }
+
+    log::debug!("Logger Initialized");
+}
+
+// A Windows service has no terminal, so write its log to a file
+#[cfg(windows)]
+fn log_file_path(running_as_service: bool) -> Option<PathBuf> {
+    if !running_as_service {
+        return debug_log_file_path();
+    }
+
+    let directory = std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("ShutdownOnLan");
+
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!(
+            "Unable to create log directory {}: {}",
+            directory.display(),
+            error
+        );
+        return None;
+    }
+
+    Some(directory.join("shutdown-on-lan.log"))
+}
+
+// launchd captures the terminal output on macOS
+#[cfg(not(windows))]
+fn log_file_path(_running_as_service: bool) -> Option<PathBuf> {
+    debug_log_file_path()
+}
+
+fn debug_log_file_path() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        Some(PathBuf::from("shutdown-on-lan.log"))
+    } else {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -165,9 +198,6 @@ fn run() -> Result<()> {
 }
 
 fn run_standalone() -> Result<()> {
-    validate_app_configuration()?;
     let config = get_app_configuration()?;
-    listener_service::run(&config);
-
-    Ok(())
+    listener_service::run(&config).context("Unable to start listening for connections")
 }

@@ -34,18 +34,24 @@ pub mod shutdown_on_lan_service {
     // entry (service_main).
     define_windows_service!(ffi_service_main, service_main);
 
+    enum ServiceEvent {
+        Stop,
+        ListenerStopped,
+    }
+
     // Service entry function which is called on background thread by the system with service
-    // parameters. There is no stdout or stderr at this point so make sure to configure the log
-    // output to file if needed.
+    // parameters. There is no stdout or stderr at this point, so logging goes to a file.
     pub fn service_main(_arguments: Vec<OsString>) {
-        if let Err(_e) = run_service() {
-            // Handle the error, by logging or something.
+        if let Err(error) = run_service() {
+            log::error!("Service failed: {}", error);
         }
     }
 
     pub fn run_service() -> Result<()> {
-        // Create a channel to be able to poll a stop event from the service worker loop.
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        // Stop requests and listener failures are both delivered on this channel
+        let (event_tx, event_rx) = mpsc::channel();
+
+        let handler_tx = event_tx.clone();
 
         // Define system service event handler that will be receiving service events.
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -56,7 +62,7 @@ pub mod shutdown_on_lan_service {
 
                 // Handle stop
                 ServiceControl::Stop => {
-                    shutdown_tx.send(()).unwrap();
+                    let _ = handler_tx.send(ServiceEvent::Stop);
                     ServiceControlHandlerResult::NoError
                 }
 
@@ -79,28 +85,28 @@ pub mod shutdown_on_lan_service {
             process_id: None,
         })?;
 
-        let config = AppConfiguration::fetch().unwrap();
+        let exit_code = match AppConfiguration::load() {
+            Ok(config) => {
+                log::info!("Forking listener service thread");
+                thread::spawn(move || {
+                    if let Err(error) = listener_service::run(&config) {
+                        log::error!("Listener service stopped: {}", error);
+                    }
 
-        log::info!("Forking listener service thread");
-        thread::spawn(move || {
-            listener_service::run(&config);
-        });
-        log::info!("Started listener service");
+                    let _ = event_tx.send(ServiceEvent::ListenerStopped);
+                });
+                log::info!("Started listener service");
 
-        loop {
-            log::debug!(target: SERVICE_NAME, "-- Event Loop --");
-
-            thread::sleep(Duration::from_millis(1000));
-
-            // Poll shutdown event.
-            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                // Break the loop either upon stop or channel disconnect
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-
-                // Continue work if no events were received within the timeout
-                Err(mpsc::RecvTimeoutError::Timeout) => (),
-            };
-        }
+                match event_rx.recv() {
+                    Ok(ServiceEvent::ListenerStopped) => ServiceExitCode::ServiceSpecific(1),
+                    Ok(ServiceEvent::Stop) | Err(_) => ServiceExitCode::Win32(0),
+                }
+            }
+            Err(error) => {
+                log::error!("Unable to read configuration: {}", error);
+                ServiceExitCode::ServiceSpecific(1)
+            }
+        };
 
         log::info!("Attempting to exit");
 
@@ -109,7 +115,7 @@ pub mod shutdown_on_lan_service {
             service_type: SERVICE_TYPE,
             current_state: ServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(0),
+            exit_code,
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
