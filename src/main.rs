@@ -1,9 +1,4 @@
-extern crate exitcode;
-extern crate log;
-extern crate simplelog;
-extern crate system_shutdown;
-
-use crate::configuration::{describe_addresses, format_addresses, AppConfiguration};
+use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
 use anyhow::{Context, Result};
 use simplelog::*;
 use std::fs::OpenOptions;

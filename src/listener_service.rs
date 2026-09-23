@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use system_shutdown::shutdown;
 
 use crate::configuration::{
-    describe_addresses, format_addresses, AppConfiguration, MAX_SECRET_LENGTH,
+    AppConfiguration, MAX_SECRET_LENGTH, describe_addresses, format_addresses,
 };
 
 /// Clients may hold a connection open indefinitely to detect whether the machine is on, so cap how many
@@ -299,10 +299,10 @@ fn wait_for_secret<R: BufRead>(
 
         thread::sleep(throttle.reserve_attempt(source, Instant::now()));
 
-        if let Ok(input) = std::str::from_utf8(&message) {
-            if secrets_match(input.trim().as_bytes(), secret.as_bytes()) {
-                return Ok(true);
-            }
+        if let Ok(input) = std::str::from_utf8(&message)
+            && secrets_match(input.trim().as_bytes(), secret.as_bytes())
+        {
+            return Ok(true);
         }
 
         throttle.record_failure(source);
@@ -453,13 +453,15 @@ mod tests {
     fn test_longest_allowed_secret_matches() {
         let secret = "a".repeat(MAX_SECRET_LENGTH);
         let input = format!("{}\r\n", secret);
-        assert!(wait_for_secret(
-            Cursor::new(input.into_bytes()),
-            &secret,
-            &unthrottled(),
-            source()
-        )
-        .unwrap());
+        assert!(
+            wait_for_secret(
+                Cursor::new(input.into_bytes()),
+                &secret,
+                &unthrottled(),
+                source()
+            )
+            .unwrap()
+        );
     }
 
     #[test]

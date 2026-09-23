@@ -6,7 +6,8 @@ license = "MPL-2.0"
 description = "Shuts this machine down when it receives a secret over the network – the opposite of wake-on-LAN"
 homepage = "https://github.com/jkmassel/shutdown-on-lan"
 repository = "https://github.com/jkmassel/shutdown-on-lan"
-edition = "2018"
+edition = "2024"
+rust-version = "1.88"
 default-run = "shutdown-on-lan"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

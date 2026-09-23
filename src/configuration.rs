@@ -1107,9 +1107,11 @@ mod tests {
         let mut configuration = AppConfiguration::default();
         configuration.set_addresses("10.0.1.100").unwrap();
 
-        assert!(configuration
-            .set_addresses("10.0.1.100,10.0.1.300")
-            .is_err());
+        assert!(
+            configuration
+                .set_addresses("10.0.1.100,10.0.1.300")
+                .is_err()
+        );
         assert_eq!(
             configuration.addresses,
             vec!["10.0.1.100".parse::<IpAddr>().unwrap()]
@@ -1157,12 +1159,16 @@ mod tests {
         let mut configuration = AppConfiguration::default();
 
         assert!(configuration.set_secret(String::new()).is_err());
-        assert!(configuration
-            .set_secret("a".repeat(MAX_SECRET_LENGTH + 1))
-            .is_err());
-        assert!(configuration
-            .set_secret("a".repeat(MAX_SECRET_LENGTH))
-            .is_ok());
+        assert!(
+            configuration
+                .set_secret("a".repeat(MAX_SECRET_LENGTH + 1))
+                .is_err()
+        );
+        assert!(
+            configuration
+                .set_secret("a".repeat(MAX_SECRET_LENGTH))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1552,10 +1558,12 @@ mod tests {
             addresses = ["127.0.0.1"]
             secret = "Super Secret String"
         "#;
-        assert!(AppConfiguration::from_toml(hand_written)
-            .unwrap()
-            .allowed_sources
-            .is_empty());
+        assert!(
+            AppConfiguration::from_toml(hand_written)
+                .unwrap()
+                .allowed_sources
+                .is_empty()
+        );
     }
 
     /// A registry key under `HKEY_CURRENT_USER` (so no admin rights are needed) that's deleted when
