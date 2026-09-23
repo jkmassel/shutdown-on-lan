@@ -1,0 +1,4 @@
+# Statically link the MSVC C runtime so the Windows binary doesn't depend on
+# `vcruntime140.dll` and the installer doesn't need to chain vcredist.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

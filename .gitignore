@@ -16,4 +16,5 @@ output.log
 shutdown-on-lan.log
 
 # Docker Cargo Cache
-.cargo
+.cargo/*
+!.cargo/config.toml
