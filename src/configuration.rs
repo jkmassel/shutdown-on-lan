@@ -119,7 +119,7 @@ impl AppConfiguration {
     fn configuration_storage_path() -> String {
         extern crate dirs;
 
-        let username = whoami::username();
+        let username = whoami::username().unwrap_or_default();
 
         if username == "root" {
             let path = Path::new("/Library/Application Support/ShutdownOnLan").to_path_buf();
@@ -184,7 +184,7 @@ impl AppConfiguration {
 
         log::debug!(
             "Creating configuration for {:?} at {:?}",
-            whoami::username(),
+            whoami::username().unwrap_or_default(),
             configuration_file_path
         );
 
