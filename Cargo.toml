@@ -17,7 +17,6 @@ log = "0.4.28"
 simplelog = "^0.12.2"
 system_shutdown = "4.1.0"
 serde = { version = "1.0", features = ["derive"] }
-structopt = { version = "0.3", default-features = false }
 anyhow = "1.0.104"
 thiserror = "2"
 exitcode = "1.1.2"
@@ -26,6 +25,7 @@ getrandom = "0.4"
 # Fix security warning
 time = "0.3.47"
 socket2 = { version = "0.6.5", features = ["all"] }
+clap = { version = "4.6.7", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.56" }
