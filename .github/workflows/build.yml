@@ -81,3 +81,54 @@ jobs:
           asset_path: build/mac/shutdownonlan.pkg
           asset_name: shutdownonlan.pkg
           asset_content_type: application/x-newton-compatible-pkg
+
+  linux:
+    needs: [setup]
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Build packages
+        run: build/linux/build-packages.sh ${{ matrix.arch }}
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shutdown-on-lan-linux-${{ matrix.arch }}
+          path: build/linux/dist
+      - name: Attach Tarball to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.setup.outputs.uploadurl}}
+          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
+          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
+          asset_content_type: application/gzip
+      - name: Attach .deb to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.setup.outputs.uploadurl}}
+          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
+          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.deb
+          asset_content_type: application/vnd.debian.binary-package
+      - name: Attach .rpm to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{needs.setup.outputs.uploadurl}}
+          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm
+          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.rpm
+          asset_content_type: application/x-rpm

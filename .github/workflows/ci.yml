@@ -44,6 +44,33 @@ jobs:
           python .github/commands/listener-smoke-test.py
         fi
 
+  linux-packages:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Install packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Build packages
+        run: build/linux/build-packages.sh ${{ matrix.arch }}
+      - name: Install the .deb
+        run: sudo apt-get install -y ./build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
+      - name: Test the installed service
+        run: sudo build/linux/test-package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shutdown-on-lan-linux-${{ matrix.arch }}
+          path: build/linux/dist
+
   validate-installer:
     runs-on: windows-latest
     steps:

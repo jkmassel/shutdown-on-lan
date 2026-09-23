@@ -6,11 +6,11 @@ Allows shutting down a computer remotely with a single TCP packet via external c
 **Supported Platforms:**
 - Windows
 - macOS
-- Linux (some assembly required)
+- Linux
 
 ### Installation
 
-Installers are provided for Windows and macOS, which then require some configuration. By default, access is only allowed from the local machine. The following settings are available:
+Installers are provided for Windows, macOS and Linux, which then require some configuration. By default, access is only allowed from the local machine. The following settings are available:
  
 ##### IP Address
 Customizing the IP address field allows you to specify which interfaces the service will accept connections on – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list. Connections arriving on any other interface are closed without being read. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
@@ -45,7 +45,14 @@ sudo launchctl start com.jkmassel.shutdownonlan
 ```
 
 #### Linux
-There's no installer for Linux yet. Build the binary with `cargo build --release` and run it as root. The configuration is stored in `/etc/shutdown-on-lan.toml`, which is created from defaults on first run:
+Packages are provided for `x86_64` and `aarch64` (for instance, a Raspberry Pi):
+
+- **Debian, Ubuntu and Raspberry Pi OS:** `sudo apt install ./shutdown-on-lan-linux-x86_64.deb`
+- **Fedora, RHEL and derivatives:** `sudo dnf install ./shutdown-on-lan-linux-x86_64.rpm`
+
+The package installs a `systemd` service, which starts immediately and on every boot. It runs as root, because shutting the machine down requires it, but is otherwise sandboxed.
+
+1. Configure the service by editing `/etc/shutdown-on-lan.toml`, or with `shutdown-on-lan set` (for instance, `sudo shutdown-on-lan set --ip-address 10.0.1.100 --secret 'Something Strong'`). The file is only readable by root, because it holds the secret. Upgrading the package never overwrites your changes.
 
 ```toml
 port_number = 53632
@@ -54,7 +61,28 @@ secret = "Super Secret String"
 allowed_sources = ["10.0.1.50"]
 ```
 
-You can edit it directly or use `sudo shutdown-on-lan set`. See details on each setting above.
+2. Once settings are in place, restart the service by running `sudo systemctl restart shutdown-on-lan`.
+3. If you're running a firewall, allow the service through it. The package includes profiles for both `firewalld` and `ufw`, which aren't enabled by default:
+
+```
+sudo firewall-cmd --permanent --add-service=shutdown-on-lan && sudo firewall-cmd --reload
+sudo ufw allow shutdown-on-lan
+```
+
+The profiles use the default port – if you've changed it, change it in `/usr/lib/firewalld/services/shutdown-on-lan.xml` or `/etc/ufw/applications.d/shutdown-on-lan` too.
+
+##### Other distributions
+The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit, the default configuration and the firewall profiles:
+
+```
+tar -xzf shutdown-on-lan-linux-x86_64.tar.gz && cd shutdown-on-lan
+sudo install -m 755 shutdown-on-lan /usr/bin/
+sudo install -m 600 shutdown-on-lan.toml /etc/
+sudo install -m 644 shutdown-on-lan.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now shutdown-on-lan
+```
+
+The service can't write to `/etc`, so it needs `/etc/shutdown-on-lan.toml` to exist before it starts.
 
 ### How to use
 
@@ -74,6 +102,9 @@ This service can also allow a client to maintain a connection to the socket with
 
 #### Mac
 The macOS service writes error messages to `/var/log/shutdownonlan.error.log` and an audit log (including the source IP address of any remote connections) to `/var/log/shutdownonlan.log`. Additionally, if there are configuration or permission issues with the service, macOS will log them to `/var/log/system.log`.
+
+#### Linux
+The service logs to the `systemd` journal, including the source IP address of any remote connections. To follow it, run `journalctl -u shutdown-on-lan -f`.
 
 #### Windows
 The Windows service writes its log (including the source IP address of any remote connections) to `C:\ProgramData\ShutdownOnLan\shutdown-on-lan.log`.

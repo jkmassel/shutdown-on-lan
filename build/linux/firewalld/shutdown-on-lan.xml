@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>Shutdown on LAN</short>
+  <description>Allows this machine to be shut down remotely by sending a secret over the network. If you've changed the port in /etc/shutdown-on-lan.toml, change it here too.</description>
+  <port protocol="tcp" port="53632"/>
+</service>
