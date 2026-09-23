@@ -1,10 +1,10 @@
 use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use simplelog::*;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process;
-use clap::{Parser, Subcommand};
 
 mod configuration;
 mod listener_service;
