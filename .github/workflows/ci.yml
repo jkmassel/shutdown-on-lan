@@ -39,7 +39,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
         run: .github/commands/build-for-windows.bat
-      - uses: actions/upload-artifact@v3
+      - name: Verify no C runtime DLL dependencies
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents target\release\shutdown-on-lan.exe
+          $deps
+          if ($deps -match 'vcruntime|msvcp|api-ms-win-crt') {
+            throw "shutdown-on-lan.exe depends on a dynamically-linked C runtime"
+          }
+      - uses: actions/upload-artifact@v4
         with:
           name: shutdown-on-lan-windows
           path: build/windows
