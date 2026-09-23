@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [ '*' ]
+  # Every base branch, so that stacked pull requests are checked too
   pull_request:
-    branches: [ main ]
 
 jobs:
   lint:
