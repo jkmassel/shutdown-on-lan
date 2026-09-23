@@ -7,7 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use system_shutdown::shutdown;
 
-use crate::configuration::{format_addresses, AppConfiguration, MAX_SECRET_LENGTH};
+use crate::configuration::{
+    describe_addresses, format_addresses, AppConfiguration, MAX_SECRET_LENGTH,
+};
 
 /// Clients may hold a connection open indefinitely to detect whether the machine is on, so cap how many
 /// we'll hold at once to avoid exhausting threads and file descriptors.
@@ -26,7 +28,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
     log::info!(
         "Listening on port {} for connections to {}",
         configuration.port_number,
-        format_addresses(&configuration.addresses)
+        describe_addresses(&configuration.addresses)
     );
 
     let open_connections = Arc::new(AtomicUsize::new(0));

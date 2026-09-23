@@ -10,15 +10,16 @@ echo "--- The service is enabled and running"
 systemctl is-enabled shutdown-on-lan
 systemctl is-active shutdown-on-lan
 
-echo "--- It's listening"
+echo "--- It's listening on every interface"
 for _ in $(seq 10); do
     ss -ltn | grep -q ':53632 ' && break
     sleep 1
 done
 ss -ltn | grep ':53632 '
 
-echo "--- Only root can read the configuration"
+echo "--- The configuration has a random secret that only root can read"
 test "$(stat -c '%a %U' /etc/shutdown-on-lan.toml)" = "600 root"
+shutdown-on-lan get --secret | grep -Eq '^Secret: [0-9a-f]{32}$'
 
 echo "--- Shutting down works from inside the service's sandbox"
 # `shutdown` asks systemd to power off, so check that the sandbox can still reach it. Only the unit's
@@ -29,8 +30,10 @@ while IFS= read -r line; do
 done < <(grep -E '^(Capability|NoNewPrivileges|Protect|Private|Restrict|Lock|Memory|SystemCall)' "$UNIT")
 systemd-run --wait --pipe --collect "${properties[@]}" systemctl show --property=Version
 
-echo "--- A wrong secret is rejected"
-echo 'not the secret' | timeout 5 nc -q1 127.0.0.1 53632 || true
+echo "--- A wrong secret sent over the network is rejected"
+address="$(hostname -I | awk '{print $1}')"
+echo 'not the secret' | timeout 5 nc -q1 "$address" 53632 || true
+journalctl -u shutdown-on-lan --no-pager | grep "New connection"
 systemctl is-active shutdown-on-lan
 
 echo "--- Package test passed"

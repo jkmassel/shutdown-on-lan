@@ -67,7 +67,9 @@ Wait-ForLog 'Listening on port'
 Write-Host '--- The default configuration is written to the registry'
 $configuration = Get-ItemProperty 'HKLM:\SOFTWARE\ShutdownOnLan'
 if ($configuration.port -ne $Port) { Fail "Expected port $Port, but found '$($configuration.port)'" }
-if ($configuration.ip_addresses -ne '127.0.0.1') { Fail "Expected ip_addresses '127.0.0.1', but found '$($configuration.ip_addresses)'" }
+# An empty list accepts connections on every interface
+if ($configuration.ip_addresses -ne '') { Fail "Expected empty ip_addresses, but found '$($configuration.ip_addresses)'" }
+if ($configuration.secret -notmatch '^[0-9a-f]{32}$') { Fail 'Expected a random 32-character hex secret' }
 if ($configuration.allowed_sources -ne '') { Fail "Expected empty allowed_sources, but found '$($configuration.allowed_sources)'" }
 
 Write-Host '--- The service accepts connections and logs to ProgramData'

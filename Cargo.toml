@@ -20,6 +20,7 @@ structopt = { version = "0.3", default-features = false }
 anyhow = "1.0.104"
 thiserror = "2"
 exitcode = "1.1.2"
+getrandom = "0.4"
 
 # Fix security warning
 time = "0.3.47"
@@ -47,23 +48,19 @@ license-file = ["LICENSE", "0"]
 depends = ""
 assets = [
     ["target/release/shutdown-on-lan", "usr/bin/", "755"],
-    # Everything in /etc is a conffile, so upgrades never overwrite a user's changes
-    ["build/linux/shutdown-on-lan.toml", "etc/", "600"],
     ["build/linux/firewalld/shutdown-on-lan.xml", "usr/lib/firewalld/services/", "644"],
+    # Everything in /etc is a conffile, so upgrades never overwrite a user's changes
     ["build/linux/ufw/shutdown-on-lan", "etc/ufw/applications.d/", "644"],
     ["README.md", "usr/share/doc/shutdown-on-lan/", "644"],
 ]
-# The default configuration only accepts connections on 127.0.0.1, so starting the service on install
-# doesn't expose anything
+# `postinst` creates the configuration with a random secret, so starting the service on install is safe
 systemd-units = { unit-scripts = "build/linux", enable = true, start = true }
-# cargo-deb only generates the scripts that enable and start the service when this is set
-maintainer-scripts = "build/linux"
+maintainer-scripts = "build/linux/debian"
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/shutdown-on-lan", dest = "/usr/bin/shutdown-on-lan", mode = "755" },
     { source = "build/linux/shutdown-on-lan.service", dest = "/usr/lib/systemd/system/shutdown-on-lan.service", mode = "644" },
-    { source = "build/linux/shutdown-on-lan.toml", dest = "/etc/shutdown-on-lan.toml", mode = "600", config = "noreplace" },
     { source = "build/linux/firewalld/shutdown-on-lan.xml", dest = "/usr/lib/firewalld/services/shutdown-on-lan.xml", mode = "644" },
     { source = "build/linux/ufw/shutdown-on-lan", dest = "/etc/ufw/applications.d/shutdown-on-lan", mode = "644", config = "noreplace" },
     { source = "README.md", dest = "/usr/share/doc/shutdown-on-lan/README.md", mode = "644", doc = true },

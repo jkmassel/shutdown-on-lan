@@ -22,6 +22,7 @@ pub const MAX_SECRET_LENGTH: usize = 4096;
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfiguration {
     pub port_number: u16,
+    /// The local interface addresses to accept connections on. Empty means every interface.
     pub addresses: Vec<IpAddr>,
     pub secret: String,
     /// The client addresses allowed to connect. Empty means any client may connect.
@@ -49,8 +50,10 @@ impl AppConfiguration {
         Self::fetch()
     }
 
+    /// Sets the local interface addresses from a comma-separated list. An empty string accepts
+    /// connections on every interface.
     pub fn set_addresses(&mut self, string: &str) -> Result<(), AddrParseError> {
-        self.addresses = parse_addresses(string)?;
+        self.addresses = parse_optional_addresses(string)?;
         Ok(())
     }
 
@@ -71,7 +74,7 @@ impl AppConfiguration {
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
-        self.addresses.contains(ip)
+        self.addresses.is_empty() || self.addresses.contains(ip)
     }
 
     /// Whether a client at `ip` is allowed to connect.
@@ -91,6 +94,15 @@ pub fn parse_optional_addresses(string: &str) -> Result<Vec<IpAddr>, AddrParseEr
     }
 
     parse_addresses(string)
+}
+
+/// Like `format_addresses`, but describes an empty list of interface addresses as meaning every interface.
+pub fn describe_addresses(addresses: &[IpAddr]) -> String {
+    if addresses.is_empty() {
+        "every interface".to_string()
+    } else {
+        format_addresses(addresses)
+    }
 }
 
 pub fn format_addresses(addresses: &[IpAddr]) -> String {
@@ -301,7 +313,7 @@ impl AppConfiguration {
 
         Ok(AppConfiguration {
             port_number: registry.read_u16(ConfigurationRegistryKeys::Port)?,
-            addresses: parse_addresses(&ips_string).map_err(|_error| {
+            addresses: parse_optional_addresses(&ips_string).map_err(|_error| {
                 ConfigurationError::RegistryKeyNotReadable(ConfigurationRegistryKeys::IpAddress)
             })?,
             secret: registry.read_string(ConfigurationRegistryKeys::Secret)?,
@@ -370,15 +382,25 @@ impl AppConfiguration {
     }
 }
 
+/// A new installation accepts connections from any client on every interface, so each one gets its own
+/// random secret – a shared default secret would let anyone on the network shut it down.
 impl Default for AppConfiguration {
     fn default() -> Self {
         AppConfiguration {
             port_number: 53632,
-            addresses: [IpAddr::from(Ipv4Addr::new(127, 0, 0, 1))].to_vec(),
-            secret: "Super Secret String".to_string(),
+            addresses: Vec::new(),
+            secret: generate_secret(),
             allowed_sources: Vec::new(),
         }
     }
+}
+
+/// Generates a secret from 128 random bits, hex-encoded so that it's easy to type into a control system.
+fn generate_secret() -> String {
+    let mut bytes = [0u8; 16];
+    // Reads the operating system's cryptographically secure random number generator
+    getrandom::fill(&mut bytes).expect("the system random number generator is unavailable");
+    bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
 // Implemented by hand so the secret never ends up in a log
@@ -660,15 +682,18 @@ mod tests {
     #[test]
     fn test_set_addresses_rejects_invalid_addresses_without_modifying_the_configuration() {
         let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
 
         assert!(configuration
             .set_addresses("10.0.1.100,10.0.1.300")
             .is_err());
-        assert!(configuration.set_addresses("").is_err());
         assert_eq!(
             configuration.addresses,
-            AppConfiguration::default().addresses
+            vec!["10.0.1.100".parse::<IpAddr>().unwrap()]
         );
+
+        configuration.set_addresses("").unwrap();
+        assert!(configuration.addresses.is_empty());
     }
 
     #[test]
@@ -705,17 +730,37 @@ mod tests {
     }
 
     #[test]
-    fn test_default_configuration_only_accepts_connections_on_loopback() {
+    fn test_default_configuration_accepts_connections_on_every_interface() {
         let configuration = AppConfiguration::default();
 
         assert!(configuration.accepts_connections_on(&"127.0.0.1".parse().unwrap()));
-        assert!(!configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_addresses_only_accept_connections_on_listed_interfaces() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
+
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(!configuration.accepts_connections_on(&"192.168.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_each_default_configuration_has_its_own_random_secret() {
+        let first = AppConfiguration::default().secret;
+        let second = AppConfiguration::default().secret;
+
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 32);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn test_debug_output_does_not_include_the_secret() {
-        let output = format!("{:?}", AppConfiguration::default());
-        assert!(!output.contains("Super Secret String"));
+        let configuration = AppConfiguration::default();
+        let output = format!("{:?}", configuration);
+        assert!(!output.contains(&configuration.secret));
     }
 
     #[cfg(unix)]
@@ -780,16 +825,6 @@ mod tests {
 
         let configuration = AppConfiguration::try_from(plist.to_vec()).unwrap();
         assert!(configuration.allowed_sources.is_empty());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn test_packaged_configuration_matches_the_defaults() {
-        let packaged = include_str!("../build/linux/shutdown-on-lan.toml");
-        assert_eq!(
-            AppConfiguration::from_toml(packaged).unwrap(),
-            AppConfiguration::default()
-        );
     }
 
     #[cfg(target_os = "linux")]

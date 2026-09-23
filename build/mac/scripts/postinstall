@@ -7,6 +7,9 @@ launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || t
 ## Older versions left the configuration readable by every user, and it holds the secret
 chmod 600 "/Library/Application Support/ShutdownOnLan/ShutDownOnLan.plist" 2>/dev/null || true
 
+## Create the configuration with a random secret, unless it already exists
+/Library/Services/shutdownonlan init
+
 ## Start the process
 launchctl load -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
 

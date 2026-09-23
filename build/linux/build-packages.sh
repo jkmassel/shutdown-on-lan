@@ -32,7 +32,6 @@ STAGING="$(mktemp -d)"
 mkdir "$STAGING/shutdown-on-lan"
 cp "$BINARY" \
     build/linux/shutdown-on-lan.service \
-    build/linux/shutdown-on-lan.toml \
     build/linux/firewalld/shutdown-on-lan.xml \
     README.md \
     LICENSE \
