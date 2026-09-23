@@ -31,8 +31,8 @@ _The secret cannot be empty or longer than 4096 bytes._
 #### Windows
 1. Download the latest version of the application and run the installer.
 2. Windows may warn that this software is from an unknown author and provide a popup saying "Windows Protected your PC". Click "More Info" then "Run Anyway".
-3. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above.
-4. Once settings are in place, restart the `ShutdownOnLan` service.
+3. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above. The key holds the secret, so only SYSTEM and Administrators can read it – run the Registry Editor as an administrator.
+4. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
 
 #### Mac
 1. Download the latest version of the application and run the installer.

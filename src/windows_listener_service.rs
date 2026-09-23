@@ -18,7 +18,8 @@ pub mod shutdown_on_lan_service {
         service_dispatcher, Result,
     };
 
-    const SERVICE_NAME: &str = "shutdown-on-lan";
+    // Must match the name the installer registers the service with in `Product.wxs`
+    const SERVICE_NAME: &str = "ShutdownOnLan";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
     pub fn run() -> anyhow::Result<()> {

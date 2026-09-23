@@ -29,6 +29,7 @@ socket2 = { version = "0.6.5", features = ["all"] }
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.56" }
 windows-service = "0.8.1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Registry"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 toml = "1.1.6"

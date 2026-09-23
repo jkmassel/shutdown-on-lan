@@ -671,6 +671,7 @@ dependencies = [
  "time",
  "toml",
  "windows-service",
+ "windows-sys",
  "winreg",
 ]
 

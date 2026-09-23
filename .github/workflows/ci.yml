@@ -81,7 +81,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
-        run: .github/commands/build-for-windows.bat
+        shell: pwsh
+        run: .github/commands/build-for-windows.ps1
       - name: Verify no C runtime DLL dependencies
         shell: pwsh
         run: |

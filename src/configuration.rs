@@ -464,7 +464,9 @@ impl AppConfiguration {
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::info!("Checking whether configuration needs to be created");
-        Self::write_missing_defaults(&Registry::with_default_root_key()?)
+        let registry = Registry::with_default_root_key()?;
+        registry.restrict_access()?;
+        Self::write_missing_defaults(&registry)
     }
 
     fn fetch_from(registry: &Registry) -> Result<AppConfiguration, ConfigurationError> {
@@ -634,6 +636,57 @@ impl Registry {
         }
 
         Ok(Registry { root_key: key })
+    }
+
+    /// Lets only SYSTEM and Administrators open the key. It holds the secret, and keys under
+    /// `HKEY_LOCAL_MACHINE\SOFTWARE` otherwise inherit read access for every user.
+    fn restrict_access(&self) -> Result<(), ConfigurationError> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        };
+        use windows_sys::Win32::System::Registry::RegSetKeySecurity;
+
+        // Full control for SYSTEM and Administrators, without inheriting anything from the parent key
+        let sddl: Vec<u16> = "D:P(A;OICI;KA;;;SY)(A;OICI;KA;;;BA)"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(ConfigurationError::RegistryAccessNotRestricted(
+                std::io::Error::last_os_error(),
+            ));
+        }
+
+        let status = unsafe {
+            RegSetKeySecurity(
+                self.root_key.raw_handle() as _,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+        };
+        unsafe { LocalFree(descriptor as _) };
+
+        if status != 0 {
+            return Err(ConfigurationError::RegistryAccessNotRestricted(
+                std::io::Error::from_raw_os_error(status as i32),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Whether `key` has a value. Errors other than the value being absent are reported, so that a
@@ -1003,6 +1056,10 @@ pub enum ConfigurationError {
     #[cfg(windows)]
     #[error("Unable to open the configuration registry key")]
     RegistryUnavailable(#[source] std::io::Error),
+
+    #[cfg(windows)]
+    #[error("Unable to restrict access to the configuration registry key")]
+    RegistryAccessNotRestricted(#[source] std::io::Error),
 
     #[cfg(windows)]
     #[error("Unable to read registry value {0:?}")]
