@@ -376,8 +376,10 @@ impl ToSocketAddrs for AppConfiguration {
             self.port_number
         );
 
-        // Listen on every interface so the service works even if the configured interfaces aren't up yet
-        // when it starts. Connections to interfaces that aren't in `addresses` are rejected after `accept`.
+        // Bind every interface rather than just the configured `addresses`. On Windows the service starts
+        // before the network interfaces are up, so binding a specific address fails at boot and the service
+        // never listens. Instead, `listener_service` rejects connections that arrive on interfaces that
+        // aren't in `addresses` after `accept`.
         let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
         addresses.push(SocketAddr::from((address, self.port_number)));
