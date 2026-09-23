@@ -7,7 +7,6 @@ set -euo pipefail
 BINARY="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/shutdown-on-lan"
 DOMAIN="com.jkmassel.shutdownonlan"
 PREFERENCES="/Library/Preferences/$DOMAIN.plist"
-MANAGED_PREFERENCES="/Library/Managed Preferences/$DOMAIN.plist"
 STORAGE_DIRECTORY="/Library/Application Support/ShutdownOnLan"
 LEGACY_FILE="$STORAGE_DIRECTORY/ShutDownOnLan.plist"
 SECRET_FILE="$STORAGE_DIRECTORY/secret"
@@ -52,7 +51,7 @@ expect_secret() {
 }
 
 reset() {
-    rm -f "$PREFERENCES" "$MANAGED_PREFERENCES"
+    rm -f "$PREFERENCES"
     rm -rf "$STORAGE_DIRECTORY"
     # cfprefsd caches domains, so make it re-read them from disk
     killall cfprefsd 2>/dev/null || true
@@ -114,25 +113,7 @@ check "\`set\` writes the settings to the preferences domain, and the secret to 
 expect_output "$(stored allowed_sources)" "192.0.2.1"
 expect_secret "set-with-cli"
 
-check "Values managed by a configuration profile take precedence, and can't be changed"
-mkdir -p "/Library/Managed Preferences"
-defaults write "$MANAGED_PREFERENCES" port_number -int 54323
-defaults write "$MANAGED_PREFERENCES" secret "managed-secret"
-killall cfprefsd 2>/dev/null || true
-output=$("$BINARY" get --port --secret 2>&1)
-expect_output "$output" "Current Port: 54323"
-expect_output "$output" "Secret: managed-secret"
-[ "$(cat "$SECRET_FILE")" = "set-with-cli" ] || fail "A managed secret replaced the secret file"
-for option in "--port 1" "--secret other"; do
-    # shellcheck disable=SC2086
-    if output=$("$BINARY" set $option 2>&1); then
-        fail "\`set $option\` changed a managed value" "$output"
-    fi
-    expect_output "$output" "managed by a configuration profile"
-done
-
-check "Values that aren't managed can still be changed"
-"$BINARY" set --allowed-sources "" >/dev/null
-expect_output "$("$BINARY" get --allowed-sources 2>&1)" "Allowed Sources: any"
+# Values managed by a configuration profile aren't covered here: macOS only honours managed preferences from
+# an installed profile, and profiles can't be installed without MDM.
 
 echo "All macOS preferences checks passed"
