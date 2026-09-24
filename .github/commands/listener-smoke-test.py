@@ -189,7 +189,7 @@ if socket.has_ipv6:
         send(b"not-the-secret\n", host="::1")
         listener.wait_for("Connection closed by [::1]")
 
-    check("IPv4 connections match IPv4 addresses on the dual-stack listener")
+    check("IPv4 connections still match IPv4 addresses")
     cli("set", "--ip-address", "127.0.0.1", "--allowed-sources", "127.0.0.1")
     with Listener() as listener:
         send(b"not-the-secret\n")

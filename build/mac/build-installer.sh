@@ -26,6 +26,9 @@ lipo -create -output root/Library/Services/shutdownonlan "${BINARIES[@]/#/../../
 mkdir -p root/Library/LaunchDaemons
 cp com.jkmassel.shutdownonlan.plist root/Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
 
+# The installer only runs scripts that are executable
+chmod +x scripts/*
+
 pkgbuild --identifier "com.jkmassel.shutdownonlan" \
     --version "$VERSION" \
     --root ./root \

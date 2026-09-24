@@ -37,7 +37,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
 
-    let listener = bind(configuration.port_number)?;
+    let listeners = bind(configuration.port_number)?;
     log::info!(
         "Listening on port {} for connections to {}",
         configuration.port_number,
@@ -50,6 +50,21 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
     ));
     let throttle = Arc::new(Throttle::new(INITIAL_ATTEMPT_DELAY, MAX_ATTEMPT_DELAY));
 
+    thread::scope(|scope| {
+        for listener in &listeners {
+            scope.spawn(|| accept_connections(listener, configuration, &slots, &throttle));
+        }
+    });
+
+    Ok(())
+}
+
+fn accept_connections(
+    listener: &TcpListener,
+    configuration: &AppConfiguration,
+    slots: &Arc<ConnectionSlots>,
+    throttle: &Arc<Throttle>,
+) {
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -59,7 +74,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
             }
         };
 
-        // IPv4 connections to the dual-stack listener arrive as IPv4-mapped IPv6 addresses
+        // Compare and log IPv4-mapped IPv6 addresses as IPv4, in case the system hands one over
         let peer_address = match stream.peer_addr() {
             Ok(address) => SocketAddr::new(address.ip().to_canonical(), address.port()),
             Err(error) => {
@@ -96,7 +111,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
             continue;
         }
 
-        let slot = match ConnectionSlots::acquire(&slots, peer_address.ip()) {
+        let slot = match ConnectionSlots::acquire(slots, peer_address.ip()) {
             Ok(slot) => slot,
             Err(error) => {
                 log::warn!("Rejected connection from {} – {}", peer, error);
@@ -109,7 +124,7 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
         }
 
         let secret = configuration.secret.clone();
-        let throttle = Arc::clone(&throttle);
+        let throttle = Arc::clone(throttle);
 
         thread::spawn(move || {
             log::info!("New connection: {}", peer);
@@ -117,47 +132,46 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
             drop(slot);
         });
     }
-
-    Ok(())
 }
 
-/// Listens on every interface, for both IPv6 and IPv4 where the system supports IPv6.
+/// Listens on every interface, for IPv4 and – where the system supports it – IPv6.
 ///
 /// This binds every interface rather than just the configured `addresses`. On Windows the service starts
 /// before the network interfaces are up, so binding a specific address fails at boot and the service
-/// never listens. Instead, `run` rejects connections that arrive on interfaces that aren't in `addresses`
-/// after `accept`.
-fn bind(port: u16) -> io::Result<TcpListener> {
-    let ipv4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
-    let ipv6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+/// never listens. Instead, `accept_connections` rejects connections that arrive on interfaces that aren't
+/// in `addresses` after `accept`.
+///
+/// IPv4 and IPv6 use separate sockets rather than one dual-stack socket. On Windows a dual-stack socket
+/// binds successfully even when another program is already using the port for IPv4, so the service would
+/// never receive IPv4 connections, and wouldn't report the problem either.
+fn bind(port: u16) -> io::Result<Vec<TcpListener>> {
+    let mut listeners = vec![listen(
+        Domain::IPV4,
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+    )?];
 
-    // Accepting IPv4 connections on an IPv6 socket is off by default on Windows, so turn it on explicitly
-    let socket = match Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
-        .and_then(|socket| socket.set_only_v6(false).map(|()| socket))
-    {
-        Ok(socket) => socket,
+    match listen(
+        Domain::IPV6,
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, listeners[0].local_addr()?.port())),
+    ) {
+        Ok(listener) => listeners.push(listener),
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => return Err(error),
         Err(error) => {
-            log::info!("IPv6 is unavailable, so only listening for IPv4 connections – {error}");
-            return listen(
-                Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?,
-                ipv4,
-            );
+            log::info!("IPv6 is unavailable, so only listening for IPv4 connections – {error}")
         }
-    };
-
-    match listen(socket, ipv6) {
-        Err(error) if error.kind() == io::ErrorKind::AddrNotAvailable => {
-            log::info!("IPv6 is unavailable, so only listening for IPv4 connections – {error}");
-            listen(
-                Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?,
-                ipv4,
-            )
-        }
-        result => result,
     }
+
+    Ok(listeners)
 }
 
-fn listen(socket: Socket, address: SocketAddr) -> io::Result<TcpListener> {
+fn listen(domain: Domain, address: SocketAddr) -> io::Result<TcpListener> {
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+
+    // Leave IPv4 to its own socket – see `bind`
+    if domain == Domain::IPV6 {
+        socket.set_only_v6(true)?;
+    }
+
     // Matches `TcpListener::bind`, which allows restarting while old connections are in `TIME_WAIT`. On
     // Windows the same option would let another program take over the port, so it's left off there.
     #[cfg(not(windows))]
@@ -529,8 +543,13 @@ mod tests {
         assert!(open.by_source.is_empty());
     }
 
-    /// Connects to a listener from `bind`, returning the addresses as `run` sees them.
-    fn connect(listener: &TcpListener, host: IpAddr) -> (IpAddr, IpAddr) {
+    /// Connects to the listener from `bind` for `host`'s address family, returning the addresses as
+    /// `accept_connections` sees them.
+    fn connect(listeners: &[TcpListener], host: IpAddr) -> (IpAddr, IpAddr) {
+        let listener = listeners
+            .iter()
+            .find(|listener| listener.local_addr().unwrap().is_ipv6() == host.is_ipv6())
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         let _client = TcpStream::connect((host, port)).unwrap();
         let (stream, peer) = listener.accept().unwrap();
@@ -543,23 +562,45 @@ mod tests {
 
     #[test]
     fn test_listener_accepts_ipv4_connections() {
-        let listener = bind(0).unwrap();
+        let listeners = bind(0).unwrap();
         let localhost = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-        assert_eq!(connect(&listener, localhost), (localhost, localhost));
+        assert_eq!(connect(&listeners, localhost), (localhost, localhost));
     }
 
     #[test]
     fn test_listener_accepts_ipv6_connections() {
-        let listener = bind(0).unwrap();
+        let listeners = bind(0).unwrap();
         let localhost = IpAddr::V6(Ipv6Addr::LOCALHOST);
 
-        assert_eq!(connect(&listener, localhost), (localhost, localhost));
+        assert_eq!(connect(&listeners, localhost), (localhost, localhost));
+    }
+
+    #[test]
+    fn test_ipv4_and_ipv6_use_the_same_port() {
+        let listeners = bind(0).unwrap();
+        let ports: Vec<u16> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().port())
+            .collect();
+
+        assert_eq!(ports.len(), 2);
+        assert_eq!(ports[0], ports[1]);
+    }
+
+    #[test]
+    fn test_binding_fails_when_the_ipv4_port_is_in_use() {
+        let other = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = other.local_addr().unwrap().port();
+
+        let error = bind(port).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
     }
 
     #[test]
     fn test_accepted_connections_are_kept_alive() {
-        let listener = bind(0).unwrap();
+        let listeners = bind(0).unwrap();
+        let listener = &listeners[0];
         let port = listener.local_addr().unwrap().port();
         let _client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
         let (stream, _peer) = listener.accept().unwrap();
