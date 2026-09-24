@@ -211,5 +211,5 @@ fn run() -> Result<()> {
 
 fn run_standalone() -> Result<()> {
     let config = get_app_configuration()?;
-    listener_service::run(&config).context("Unable to start listening for connections")
+    listener_service::run(config).context("Unable to listen for connections")
 }

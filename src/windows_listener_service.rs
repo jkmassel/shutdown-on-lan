@@ -2,7 +2,7 @@
 pub mod shutdown_on_lan_service {
     use crate::{configuration::AppConfiguration, listener_service};
 
-    use std::{ffi::OsString, sync::mpsc, thread, time::Duration};
+    use std::{ffi::OsString, panic, sync::mpsc, thread, time::Duration};
 
     use anyhow::anyhow;
 
@@ -88,8 +88,13 @@ pub mod shutdown_on_lan_service {
             Ok(config) => {
                 log::info!("Forking listener service thread");
                 thread::spawn(move || {
-                    if let Err(error) = listener_service::run(&config) {
-                        log::error!("Listener service stopped: {}", error);
+                    // Always report that the listener stopped, even if it panicked – otherwise the
+                    // service would keep running without listening
+                    match panic::catch_unwind(|| listener_service::run(config)) {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => log::error!("Listener service stopped: {}", error),
+                        // The panic hook has already logged the details
+                        Err(_) => log::error!("Listener service stopped: it panicked"),
                     }
 
                     let _ = event_tx.send(ServiceEvent::ListenerStopped);
