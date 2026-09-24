@@ -13,7 +13,43 @@ function Fail([string] $Message) {
     Write-Host "::error::$Message"
     Write-Host '--- Service log'
     Get-ServiceLog | ForEach-Object { Write-Host "$($_.TimeCreated) [$($_.LevelDisplayName)] $($_.Message)" }
+    try { Write-Diagnostics } catch { Write-Host "Unable to collect diagnostics: $_" }
     exit 1
+}
+
+# Tells a missing log entry apart from a service that isn't doing what the log says
+function Write-Diagnostics {
+    Write-Host '--- Service state'
+    $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+    if ($service) {
+        Write-Host "State: $($service.State), PID: $($service.ProcessId), exit code: $($service.ExitCode) / $($service.ServiceSpecificExitCode)"
+    } else {
+        Write-Host 'The service is not installed'
+    }
+
+    Write-Host "--- Listening on port $Port"
+    Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host "$($_.LocalAddress):$($_.LocalPort), PID $($_.OwningProcess)" }
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $client.Connect('127.0.0.1', $Port)
+        Write-Host 'A connection to 127.0.0.1 succeeded'
+    } catch {
+        Write-Host "A connection to 127.0.0.1 failed: $($_.Exception.InnerException.Message)"
+    } finally {
+        $client.Close()
+    }
+
+    Write-Host '--- Other Application and System events'
+    # Crashes (Application Error, Windows Error Reporting) and service control manager events
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application', 'System'; StartTime = $TestStart; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProviderName -ne $EventSource } |
+        Sort-Object TimeCreated |
+        ForEach-Object { Write-Host "$($_.TimeCreated) $($_.LogName)/$($_.ProviderName) [$($_.LevelDisplayName)] $($_.Message)" }
+    Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $TestStart } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match $ServiceName } |
+        Sort-Object TimeCreated |
+        ForEach-Object { Write-Host "$($_.TimeCreated) SCM: $($_.Message)" }
 }
 
 function Get-ServiceLog {
