@@ -29,7 +29,7 @@
 	<Fragment>
 		<ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
 			<Component Id="ProductComponent">
-				<File Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes">
+				<File Id="ShutdownOnLanExe" Name="shutdown-on-lan.exe" Source="shutdown-on-lan.exe" Vital="yes" KeyPath="yes">
 					<fire:FirewallException Id="Allow" Name="ShutdownOnLan" Scope="localSubnet"/>
 				</File>
 				<!-- The name must match `SERVICE_NAME` in src/windows_listener_service.rs -->
@@ -39,6 +39,9 @@
 					<util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
 					<ServiceConfig FailureActionsWhen="failedToStopOrReturnedError" OnInstall="yes" OnReinstall="yes" />
 				</ServiceInstall>
+				<!-- The service logs to the Application event log. The executable contains the message resources. The
+				     name must match the event source in src/logging.rs -->
+				<util:EventSource Name="ShutdownOnLan" Log="Application" EventMessageFile="[#ShutdownOnLanExe]" SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
 				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
 			</Component>
 		</ComponentGroup>

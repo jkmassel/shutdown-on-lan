@@ -2,7 +2,8 @@ use socket2::{Domain, Protocol, SockRef, Socket, TcpKeepalive, Type};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use system_shutdown::shutdown;
@@ -32,7 +33,17 @@ const MAX_ATTEMPT_DELAY: Duration = Duration::from_secs(5);
 /// A source that hasn't made an attempt for this long starts over with no delay.
 const FORGET_SOURCE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
+/// When accepting connections fails – usually because the system is out of file descriptors or memory –
+/// wait this long before trying again, doubling up to `MAX_ACCEPT_RETRY_DELAY`. If accepting keeps
+/// failing for `GIVE_UP_ACCEPTING_AFTER`, the listener is assumed to be broken, and the service stops so
+/// that whatever supervises it can report the problem and restart it.
+const INITIAL_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const MAX_ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(5);
+const GIVE_UP_ACCEPTING_AFTER: Duration = Duration::from_secs(60);
+
+/// Listens for connections until something goes wrong that the service can't recover from – it never
+/// returns `Ok`.
+pub fn run(configuration: AppConfiguration) -> io::Result<()> {
     configuration
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -44,34 +55,85 @@ pub fn run(configuration: &AppConfiguration) -> io::Result<()> {
         describe_addresses(&configuration.addresses)
     );
 
+    let configuration = Arc::new(configuration);
     let slots = Arc::new(ConnectionSlots::new(
         MAX_OPEN_CONNECTIONS,
         MAX_OPEN_CONNECTIONS_PER_SOURCE,
     ));
     let throttle = Arc::new(Throttle::new(INITIAL_ATTEMPT_DELAY, MAX_ATTEMPT_DELAY));
 
-    thread::scope(|scope| {
-        for listener in &listeners {
-            scope.spawn(|| accept_connections(listener, configuration, &slots, &throttle));
-        }
-    });
+    // Stop as soon as either listener does, rather than carrying on with only IPv4 or only IPv6
+    let (stopped_tx, stopped) = mpsc::channel();
 
-    Ok(())
+    for listener in listeners {
+        let configuration = Arc::clone(&configuration);
+        let slots = Arc::clone(&slots);
+        let throttle = Arc::clone(&throttle);
+        let stopped_tx = stopped_tx.clone();
+
+        thread::Builder::new()
+            .name(format!("listener {}", listener.local_addr()?))
+            .spawn(move || {
+                // The panic hook has already logged the details
+                let error = panic::catch_unwind(AssertUnwindSafe(|| {
+                    accept_connections(&listener, &configuration, &slots, &throttle)
+                }))
+                .unwrap_or_else(|_| io::Error::other("the listener panicked"));
+
+                let _ = stopped_tx.send(error);
+            })?;
+    }
+
+    drop(stopped_tx);
+    Err(stopped
+        .recv()
+        .unwrap_or_else(|_| io::Error::other("every listener stopped")))
 }
 
+/// Accepts connections until it fails in a way that it can't recover from, and returns why.
 fn accept_connections(
     listener: &TcpListener,
-    configuration: &AppConfiguration,
+    configuration: &Arc<AppConfiguration>,
     slots: &Arc<ConnectionSlots>,
     throttle: &Arc<Throttle>,
-) {
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(error) => {
-                log::error!("Unable to accept connection: {}", error);
+) -> io::Error {
+    let mut retry = AcceptRetry::new(
+        INITIAL_ACCEPT_RETRY_DELAY,
+        MAX_ACCEPT_RETRY_DELAY,
+        GIVE_UP_ACCEPTING_AFTER,
+    );
+
+    loop {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => {
+                retry.succeeded();
+                stream
+            }
+            // The client went away before the connection was accepted
+            Err(error) if affects_only_this_connection(&error) => {
+                log::debug!("Unable to accept connection: {}", error);
                 continue;
             }
+            Err(error) => match retry.failed(Instant::now()) {
+                Some(delay) => {
+                    log::warn!(
+                        "Unable to accept connections, trying again in {:?} – {}",
+                        delay,
+                        error
+                    );
+                    thread::sleep(delay);
+                    continue;
+                }
+                None => {
+                    return io::Error::new(
+                        error.kind(),
+                        format!(
+                            "unable to accept connections for {:?} – {}",
+                            GIVE_UP_ACCEPTING_AFTER, error
+                        ),
+                    );
+                }
+            },
         };
 
         // Compare and log IPv4-mapped IPv6 addresses as IPv4, in case the system hands one over
@@ -87,13 +149,19 @@ fn accept_connections(
         let interface_ip = match stream.local_addr() {
             Ok(address) => address.ip().to_canonical(),
             Err(error) => {
-                log::warn!("Dropping connection from {} – {}", peer, error);
+                log::warn!(
+                    peer_addr:% = peer_address.ip();
+                    "Dropping connection from {} – {}",
+                    peer,
+                    error
+                );
                 continue;
             }
         };
 
         if !configuration.accepts_connections_on(&interface_ip) {
             log::info!(
+                peer_addr:% = peer_address.ip();
                 "Rejected connection from {} on {:?} – the configuration only allows connections on {}",
                 peer,
                 interface_ip,
@@ -104,6 +172,7 @@ fn accept_connections(
 
         if !configuration.accepts_connections_from(&peer_address.ip()) {
             log::info!(
+                peer_addr:% = peer_address.ip();
                 "Rejected connection from {} – the configuration only allows connections from {}",
                 peer,
                 format_addresses(&configuration.allowed_sources)
@@ -114,23 +183,91 @@ fn accept_connections(
         let slot = match ConnectionSlots::acquire(slots, peer_address.ip()) {
             Ok(slot) => slot,
             Err(error) => {
-                log::warn!("Rejected connection from {} – {}", peer, error);
+                log::warn!(
+                    peer_addr:% = peer_address.ip();
+                    "Rejected connection from {} – {}",
+                    peer,
+                    error
+                );
                 continue;
             }
         };
 
         if let Err(error) = enable_keepalive(&stream) {
-            log::warn!("Unable to enable keepalive for {} – {}", peer, error);
+            log::warn!(
+                peer_addr:% = peer_address.ip();
+                "Unable to enable keepalive for {} – {}",
+                peer,
+                error
+            );
         }
 
-        let secret = configuration.secret.clone();
+        // Shared rather than cloned, so there's only ever one copy of the secret in memory
+        let configuration = Arc::clone(configuration);
         let throttle = Arc::clone(throttle);
 
-        thread::spawn(move || {
-            log::info!("New connection: {}", peer);
-            handle_stream(stream, &secret, &throttle, peer_address);
+        // If the thread can't be created, the connection and its slot are dropped with the closure
+        let spawned = thread::Builder::new().spawn(move || {
+            log::info!(peer_addr:% = peer_address.ip(); "New connection: {}", peer);
+            handle_stream(stream, &configuration.secret, &throttle, peer_address);
             drop(slot);
         });
+
+        if let Err(error) = spawned {
+            log::warn!(
+                peer_addr:% = peer_address.ip();
+                "Dropping connection from {} – unable to handle it: {}",
+                peer_address,
+                error
+            );
+        }
+    }
+}
+
+/// Errors from `accept` that are about the connection being accepted, rather than the listener.
+fn affects_only_this_connection(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+    )
+}
+
+/// Spaces out attempts to accept connections after a failure, and decides when to give up.
+struct AcceptRetry {
+    initial_delay: Duration,
+    max_delay: Duration,
+    give_up_after: Duration,
+    /// When the current run of failures started, and how long to wait after the next one
+    failing: Option<(Instant, Duration)>,
+}
+
+impl AcceptRetry {
+    fn new(initial_delay: Duration, max_delay: Duration, give_up_after: Duration) -> Self {
+        AcceptRetry {
+            initial_delay,
+            max_delay,
+            give_up_after,
+            failing: None,
+        }
+    }
+
+    fn succeeded(&mut self) {
+        self.failing = None;
+    }
+
+    /// How long to wait before trying again, or `None` if accepting has been failing for too long.
+    fn failed(&mut self, now: Instant) -> Option<Duration> {
+        let (since, delay) = self.failing.unwrap_or((now, self.initial_delay));
+
+        if now.duration_since(since) >= self.give_up_after {
+            return None;
+        }
+
+        self.failing = Some((since, (delay * 2).min(self.max_delay)));
+        Some(delay)
     }
 }
 
@@ -269,14 +406,16 @@ impl Drop for ConnectionSlot {
 fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: SocketAddr) {
     match wait_for_secret(BufReader::new(stream), secret, throttle, peer.ip()) {
         Ok(true) => {
-            log::info!("Shutting down - source: {}", peer);
+            log::info!(peer_addr:% = peer.ip(); "Shutting down - source: {}", peer);
 
             if let Err(error) = shutdown() {
                 log::error!("Failed to shut down: {}", error);
             }
         }
-        Ok(false) => log::info!("Connection closed by {}", peer),
-        Err(error) => log::warn!("Terminating connection with {}: {}", peer, error),
+        Ok(false) => log::info!(peer_addr:% = peer.ip(); "Connection closed by {}", peer),
+        Err(error) => {
+            log::warn!(peer_addr:% = peer.ip(); "Terminating connection with {}: {}", peer, error)
+        }
     }
 }
 
@@ -320,7 +459,7 @@ fn wait_for_secret<R: BufRead>(
         }
 
         throttle.record_failure(source);
-        log::debug!("Received a message that didn't match the secret");
+        log::debug!(peer_addr:% = source; "Received a message that didn't match the secret");
     }
 }
 
@@ -429,6 +568,64 @@ mod tests {
     }
 
     #[test]
+    fn test_accept_retry_backs_off_then_gives_up() {
+        let mut retry = AcceptRetry::new(
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+            Duration::from_secs(1),
+        );
+        let start = Instant::now();
+
+        assert_eq!(retry.failed(start), Some(Duration::from_millis(100)));
+        assert_eq!(retry.failed(start), Some(Duration::from_millis(200)));
+        assert_eq!(retry.failed(start), Some(Duration::from_millis(300)));
+        assert_eq!(retry.failed(start), Some(Duration::from_millis(300)));
+        assert_eq!(
+            retry.failed(start + Duration::from_millis(999)),
+            Some(Duration::from_millis(300))
+        );
+        assert_eq!(retry.failed(start + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn test_accept_retry_starts_over_after_a_success() {
+        let mut retry = AcceptRetry::new(
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+            Duration::from_secs(1),
+        );
+        let start = Instant::now();
+
+        retry.failed(start);
+        retry.failed(start);
+        retry.succeeded();
+
+        // The give-up time is measured from the first failure after the success
+        let later = start + Duration::from_secs(5);
+        assert_eq!(retry.failed(later), Some(Duration::from_millis(100)));
+        assert_eq!(
+            retry.failed(later + Duration::from_millis(999)),
+            Some(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn test_client_errors_during_accept_only_affect_that_connection() {
+        for kind in [
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::Interrupted,
+        ] {
+            assert!(affects_only_this_connection(&io::Error::from(kind)));
+        }
+
+        // For instance, EMFILE – out of file descriptors
+        assert!(!affects_only_this_connection(&io::Error::other(
+            "too many open files"
+        )));
+    }
+
+    #[test]
     fn test_secret_without_a_trailing_newline_matches() {
         assert!(wait_for(b"Super Secret String").unwrap());
     }
@@ -493,7 +690,7 @@ mod tests {
             ..AppConfiguration::default()
         };
 
-        let error = run(&configuration).unwrap_err();
+        let error = run(configuration).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 

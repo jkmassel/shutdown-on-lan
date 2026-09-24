@@ -14,9 +14,5 @@
 		<key>SuccessfulExit</key>
 		<false/>
 	</dict>
-	<key>StandardOutPath</key>
-	<string>/var/log/shutdownonlan.log</string>
-	<key>StandardErrorPath</key>
-	<string>/var/log/shutdownonlan.error.log</string>
 </dict>
 </plist>

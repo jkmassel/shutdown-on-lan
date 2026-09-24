@@ -113,13 +113,25 @@ This service can also allow a client to maintain a connection to the socket with
 
 ### Debugging Issues
 
+Each service logs to the platform's own log store, including the source IP address of any remote connections. The system handles retention and rotation. Running `shutdown-on-lan` from a terminal logs to the terminal instead.
+
 #### Mac
-The macOS service writes error messages to `/var/log/shutdownonlan.error.log` and an audit log (including the source IP address of any remote connections) to `/var/log/shutdownonlan.log`. Additionally, if there are configuration or permission issues with the service, macOS will log them to `/var/log/system.log`.
+The service logs to unified logging under the `com.jkmassel.shutdownonlan` subsystem, so it appears in Console.app. To see the last day's log, run:
+
+`log show --last 1d --predicate 'subsystem == "com.jkmassel.shutdownonlan"'`
+
+To follow it, use `log stream` with the same predicate. If there are configuration or permission issues with the service, launchd will log them to `/var/log/system.log`.
+
+Older versions wrote to `/var/log/shutdownonlan.log` and `/var/log/shutdownonlan.error.log`. Upgrading leaves these in place – they can be deleted.
 
 #### Linux
-The service logs to the `systemd` journal, including the source IP address of any remote connections. To follow it, run `journalctl -u shutdown-on-lan -f`.
+The service logs to the `systemd` journal. To follow it, run `journalctl -u shutdown-on-lan -f`. Warnings and errors can be listed with `journalctl -u shutdown-on-lan -p warning`, and every entry about a remote connection has a `PEER_ADDR` field – for instance, `journalctl -u shutdown-on-lan PEER_ADDR=10.0.1.50` lists everything from `10.0.1.50`.
 
 #### Windows
-The Windows service writes its log (including the source IP address of any remote connections) to `C:\ProgramData\ShutdownOnLan\shutdown-on-lan.log`.
+The service logs to the Application event log with the source `ShutdownOnLan`, so it appears in Event Viewer. To list the most recent entries from PowerShell, run:
+
+`Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'ShutdownOnLan' } -MaxEvents 50`
+
+Older versions wrote to `C:\ProgramData\ShutdownOnLan\shutdown-on-lan.log`. Upgrading leaves it in place – it can be deleted.
 
 The Windows version can be run in standalone mode by running `shutdown-on-lan.exe run` from an Administrative PowerShell. This runs the same code that's used in the service, and should help debug any issues.

@@ -43,4 +43,16 @@ echo 'not the secret' | timeout 5 nc -q1 "$address" 53632 || true
 journalctl -u shutdown-on-lan --no-pager | grep "New connection"
 systemctl is-active shutdown-on-lan
 
+echo "--- The service writes native journal entries, with a priority and the peer address as a field"
+# Lines printed to stdout would have neither. `info!` is recorded as PRIORITY=5 (notice).
+journalctl -u shutdown-on-lan --no-pager -o cat PEER_ADDR="$address" PRIORITY=5 | grep "Connection closed by"
+
+echo "--- The service hasn't crashed or been restarted"
+# `Restart=on-failure` would otherwise hide a crash
+test "$(systemctl show -p NRestarts --value shutdown-on-lan)" = 0
+if journalctl -u shutdown-on-lan --no-pager -o cat | grep "panicked at"; then
+    echo "The service panicked"
+    exit 1
+fi
+
 echo "--- Package test passed"
