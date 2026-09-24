@@ -218,6 +218,21 @@ Wait-ForConnection
 if (-not (Test-Path $EventSourceKey)) { Fail 'Expected the event source to still be registered after upgrading' }
 $msi = $upgradeMsi
 
+# The failure actions restart the service, which would otherwise hide a crash. Stopping itself with a
+# service-specific error, as it does above, is event 7024 rather than one of these.
+Write-Host '--- The service has not crashed'
+$crashes = @(
+    Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7031, 7034; StartTime = $TestStart } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match $ServiceName }
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error', 'Windows Error Reporting'; StartTime = $TestStart } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match 'shutdown-on-lan\.exe' }
+    Get-ServiceLog | Where-Object { $_.Message -and $_.Message.Contains('panicked at') }
+)
+if ($crashes.Count -gt 0) {
+    $crashes | ForEach-Object { Write-Host "$($_.TimeCreated) $($_.ProviderName): $($_.Message)" }
+    Fail 'The service crashed or panicked'
+}
+
 Write-Host '--- Uninstalling'
 $uninstall = Start-Process msiexec.exe -ArgumentList "/x `"$msi`" /qn /l*v msi-uninstall.log" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {

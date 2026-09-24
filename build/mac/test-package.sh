@@ -57,6 +57,18 @@ echo "--- Nothing is written to the old log files"
 test ! -e /var/log/shutdownonlan.log
 test ! -e /var/log/shutdownonlan.error.log
 
+# Before the next step, which kills it on purpose
+echo "--- The service hasn't crashed or exited"
+launchctl print "system/$LABEL" | grep "last exit code = (never exited)"
+if ls /Library/Logs/DiagnosticReports | grep -i '^shutdownonlan'; then
+    echo "Found a crash report for the service"
+    exit 1
+fi
+if service_log_contains "panicked at"; then
+    echo "The service panicked"
+    exit 1
+fi
+
 echo "--- launchd restarts the service if it crashes"
 kill -9 "$pid"
 for _ in $(seq 30); do
