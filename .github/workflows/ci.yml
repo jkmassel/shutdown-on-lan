@@ -7,6 +7,9 @@ on:
   # Every base branch, so that stacked pull requests are checked too
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
