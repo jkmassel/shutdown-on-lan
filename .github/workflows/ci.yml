@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo fmt --check
@@ -29,13 +29,13 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose -- --test-threads 1
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.x'
     - name: Test macOS preferences
@@ -64,7 +64,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Install packaging tools
         run: cargo install --locked cargo-deb cargo-generate-rpm
@@ -74,7 +74,7 @@ jobs:
         run: sudo apt-get install -y ./build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
       - name: Test the installed service
         run: sudo build/linux/test-package.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
@@ -82,7 +82,7 @@ jobs:
   mac-installer:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Build the installer
         run: build/mac/build-installer.sh
@@ -95,7 +95,7 @@ jobs:
         run: |
           sudo cat /var/log/shutdownonlan.log /var/log/shutdownonlan.error.log || true
           sudo grep -A3 -i 'shutdownonlan\|postinstall' /var/log/install.log | tail -80 || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
@@ -103,7 +103,7 @@ jobs:
   validate-installer:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
         shell: pwsh
@@ -121,7 +121,7 @@ jobs:
       - name: Test Windows service
         shell: pwsh
         run: .github/commands/test-windows-service.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shutdown-on-lan-windows
           path: build/windows

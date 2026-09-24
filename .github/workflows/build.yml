@@ -23,7 +23,7 @@ jobs:
     runs-on: windows-latest
     needs: [setup]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Build
@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: cp build/windows/Product.msi shutdown-on-lan-windows-installer.msi
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shutdown-on-lan-windows-installer.msi
           path: shutdown-on-lan-windows-installer.msi
@@ -45,13 +45,13 @@ jobs:
     runs-on: macos-latest
     needs: [setup]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Package
         run: build/mac/build-installer.sh
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
@@ -71,7 +71,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Install packaging tools
@@ -79,7 +79,7 @@ jobs:
       - name: Build packages
         run: build/linux/build-packages.sh ${{ matrix.arch }}
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
