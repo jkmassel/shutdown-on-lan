@@ -218,12 +218,17 @@ Wait-ForConnection
 if (-not (Test-Path $EventSourceKey)) { Fail 'Expected the event source to still be registered after upgrading' }
 $msi = $upgradeMsi
 
-# The failure actions restart the service, which would otherwise hide a crash. Stopping itself with a
-# service-specific error, as it does above, is event 7024 rather than one of these.
+# The failure actions restart the service, which would otherwise hide a crash. A crash is event 7031
+# ("terminated unexpectedly"), or 7034 without failure actions. Stopping with a service-specific error, as
+# the service does above when it can't listen, is also logged as 7031 – but always alongside a 7024.
 Write-Host '--- The service has not crashed'
+function Get-ScmEvents([int] $Id) {
+    @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = $Id; StartTime = $TestStart } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match $ServiceName })
+}
+$unexpectedStops = (Get-ScmEvents 7031).Count + (Get-ScmEvents 7034).Count - (Get-ScmEvents 7024).Count
+if ($unexpectedStops -gt 0) { Fail "The service terminated unexpectedly $unexpectedStops time(s)" }
 $crashes = @(
-    Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7031, 7034; StartTime = $TestStart } -ErrorAction SilentlyContinue |
-        Where-Object { $_.Message -match $ServiceName }
     Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error', 'Windows Error Reporting'; StartTime = $TestStart } -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -match 'shutdown-on-lan\.exe' }
     Get-ServiceLog | Where-Object { $_.Message -and $_.Message.Contains('panicked at') }
