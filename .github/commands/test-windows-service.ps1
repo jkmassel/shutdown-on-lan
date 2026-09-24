@@ -5,26 +5,36 @@ $ErrorActionPreference = 'Stop'
 
 $ServiceName = 'ShutdownOnLan'
 $Port = 53632
-$LogPath = 'C:\ProgramData\ShutdownOnLan\shutdown-on-lan.log'
+$EventSource = 'ShutdownOnLan'
+$EventSourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$EventSource"
+$TestStart = Get-Date
 
 function Fail([string] $Message) {
     Write-Host "::error::$Message"
-    if (Test-Path $LogPath) {
-        Write-Host '--- Service log'
-        Get-Content $LogPath
-    }
+    Write-Host '--- Service log'
+    Get-ServiceLog | ForEach-Object { Write-Host "$($_.TimeCreated) [$($_.LevelDisplayName)] $($_.Message)" }
     exit 1
 }
 
-function Wait-ForLog([string] $Text) {
+function Get-ServiceLog {
+    # Get-WinEvent reports an error, rather than returning nothing, if there are no matching events
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $EventSource; StartTime = $TestStart } -ErrorAction SilentlyContinue |
+        Sort-Object RecordId
+}
+
+# `Message` is only the logged text if the event source's message file is registered – otherwise it's
+# "The description for Event ID 3 from source ShutdownOnLan cannot be found..."
+function Wait-ForLog([string] $Text, [string] $Level = 'Information') {
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline) {
-        if ((Test-Path $LogPath) -and (Get-Content $LogPath -Raw).Contains($Text)) {
+        $entry = Get-ServiceLog | Where-Object { $_.Message -and $_.Message.Contains($Text) } | Select-Object -Last 1
+        if ($entry) {
+            if ($entry.LevelDisplayName -ne $Level) { Fail "Expected '$Text' to be logged as $Level, but it was $($entry.LevelDisplayName)" }
             return
         }
         Start-Sleep -Milliseconds 200
     }
-    Fail "Timed out waiting for the service log to contain '$Text'"
+    Fail "Timed out waiting for the event log to contain '$Text'"
 }
 
 function Get-ServiceExitCodes {
@@ -111,7 +121,7 @@ if ($failureActions -notmatch 'RESTART') { Fail "Expected the service to restart
 $failureFlag = sc.exe qfailureflag $ServiceName | Out-String
 if ($failureFlag -notmatch 'TRUE') { Fail "Expected failure actions to apply when the service stops with an error, but found:`n$failureFlag" }
 
-Write-Host '--- The service accepts connections and logs to ProgramData'
+Write-Host '--- The service accepts connections and logs to the event log'
 Send-WrongSecret
 Wait-ForLog 'Connection closed by 127.0.0.1'
 
@@ -141,7 +151,7 @@ $codes = Get-ServiceExitCodes
 if ($codes.ExitCode -ne 1066 -or $codes.ServiceSpecificExitCode -ne 1) {
     Fail "Expected exit code 1066 with service-specific code 1, but found $($codes.ExitCode) / $($codes.ServiceSpecificExitCode)"
 }
-Wait-ForLog 'Listener service stopped'
+Wait-ForLog 'Listener service stopped' -Level 'Error'
 
 Write-Host '--- The service restarts by itself once the port is free'
 # The failure actions restart it 5 seconds after it stops
@@ -169,6 +179,7 @@ if ((Get-ItemProperty 'HKLM:\SOFTWARE\ShutdownOnLan').secret -ne $configuration.
 }
 (Get-Service $ServiceName).WaitForStatus('Running', '00:00:30')
 Wait-ForConnection
+if (-not (Test-Path $EventSourceKey)) { Fail 'Expected the event source to still be registered after upgrading' }
 $msi = $upgradeMsi
 
 Write-Host '--- Uninstalling'
@@ -179,6 +190,9 @@ if ($uninstall.ExitCode -ne 0) {
 }
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
     Fail 'Expected the service to be removed after uninstall'
+}
+if (Test-Path $EventSourceKey) {
+    Fail 'Expected the event source to be removed after uninstall'
 }
 
 Write-Host 'All Windows service checks passed'

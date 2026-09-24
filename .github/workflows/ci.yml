@@ -90,7 +90,7 @@ jobs:
       - name: Service and installer logs
         if: failure()
         run: |
-          sudo cat /var/log/shutdownonlan.log /var/log/shutdownonlan.error.log || true
+          log show --last 15m --predicate 'subsystem == "com.jkmassel.shutdownonlan"' --style compact || true
           sudo grep -A3 -i 'shutdownonlan\|postinstall' /var/log/install.log | tail -80 || true
       - uses: actions/upload-artifact@v4
         with:

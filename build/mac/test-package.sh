@@ -5,7 +5,14 @@
 set -euo pipefail
 
 LABEL=com.jkmassel.shutdownonlan
-LOG=/var/log/shutdownonlan.log
+PREDICATE='subsystem == "com.jkmassel.shutdownonlan"'
+START="$(date '+%Y-%m-%d %H:%M:%S')"
+
+# The service logs to unified logging. `grep > /dev/null` rather than `grep -q`, which would stop reading
+# early and fail `log show` with SIGPIPE under `pipefail`.
+service_log_contains() {
+    log show --start "$START" --predicate "$PREDICATE" --style compact | grep "$1" > /dev/null
+}
 
 service_pid() {
     launchctl print "system/$LABEL" | awk '/^\tpid = / { print $3 }'
@@ -35,10 +42,20 @@ test "$(stat -f '%Lp %Su' '/Library/Application Support/ShutdownOnLan/secret')" 
 echo "--- A wrong secret sent over the network is rejected"
 echo 'not the secret' | nc -w 5 127.0.0.1 53632 || true
 for _ in $(seq 10); do
-    grep -q "Connection closed by 127.0.0.1" "$LOG" && break
+    service_log_contains "Connection closed by 127.0.0.1" && break
     sleep 1
 done
-grep "Connection closed by 127.0.0.1" "$LOG"
+service_log_contains "Connection closed by 127.0.0.1"
+
+echo "--- info! is stored at a level that survives a reboot"
+# Unified logging only keeps "Info" and "Debug" entries in memory
+log show --start "$START" --style json \
+    --predicate "$PREDICATE AND eventMessage BEGINSWITH \"Connection closed by\"" \
+    | grep '"messageType" : "Default"' > /dev/null
+
+echo "--- Nothing is written to the old log files"
+test ! -e /var/log/shutdownonlan.log
+test ! -e /var/log/shutdownonlan.error.log
 
 echo "--- launchd restarts the service if it crashes"
 kill -9 "$pid"

@@ -87,13 +87,19 @@ fn accept_connections(
         let interface_ip = match stream.local_addr() {
             Ok(address) => address.ip().to_canonical(),
             Err(error) => {
-                log::warn!("Dropping connection from {} – {}", peer, error);
+                log::warn!(
+                    peer_addr:% = peer_address.ip();
+                    "Dropping connection from {} – {}",
+                    peer,
+                    error
+                );
                 continue;
             }
         };
 
         if !configuration.accepts_connections_on(&interface_ip) {
             log::info!(
+                peer_addr:% = peer_address.ip();
                 "Rejected connection from {} on {:?} – the configuration only allows connections on {}",
                 peer,
                 interface_ip,
@@ -104,6 +110,7 @@ fn accept_connections(
 
         if !configuration.accepts_connections_from(&peer_address.ip()) {
             log::info!(
+                peer_addr:% = peer_address.ip();
                 "Rejected connection from {} – the configuration only allows connections from {}",
                 peer,
                 format_addresses(&configuration.allowed_sources)
@@ -114,20 +121,30 @@ fn accept_connections(
         let slot = match ConnectionSlots::acquire(slots, peer_address.ip()) {
             Ok(slot) => slot,
             Err(error) => {
-                log::warn!("Rejected connection from {} – {}", peer, error);
+                log::warn!(
+                    peer_addr:% = peer_address.ip();
+                    "Rejected connection from {} – {}",
+                    peer,
+                    error
+                );
                 continue;
             }
         };
 
         if let Err(error) = enable_keepalive(&stream) {
-            log::warn!("Unable to enable keepalive for {} – {}", peer, error);
+            log::warn!(
+                peer_addr:% = peer_address.ip();
+                "Unable to enable keepalive for {} – {}",
+                peer,
+                error
+            );
         }
 
         let secret = configuration.secret.clone();
         let throttle = Arc::clone(throttle);
 
         thread::spawn(move || {
-            log::info!("New connection: {}", peer);
+            log::info!(peer_addr:% = peer_address.ip(); "New connection: {}", peer);
             handle_stream(stream, &secret, &throttle, peer_address);
             drop(slot);
         });
@@ -269,14 +286,16 @@ impl Drop for ConnectionSlot {
 fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: SocketAddr) {
     match wait_for_secret(BufReader::new(stream), secret, throttle, peer.ip()) {
         Ok(true) => {
-            log::info!("Shutting down - source: {}", peer);
+            log::info!(peer_addr:% = peer.ip(); "Shutting down - source: {}", peer);
 
             if let Err(error) = shutdown() {
                 log::error!("Failed to shut down: {}", error);
             }
         }
-        Ok(false) => log::info!("Connection closed by {}", peer),
-        Err(error) => log::warn!("Terminating connection with {}: {}", peer, error),
+        Ok(false) => log::info!(peer_addr:% = peer.ip(); "Connection closed by {}", peer),
+        Err(error) => {
+            log::warn!(peer_addr:% = peer.ip(); "Terminating connection with {}: {}", peer, error)
+        }
     }
 }
 
@@ -320,7 +339,7 @@ fn wait_for_secret<R: BufRead>(
         }
 
         throttle.record_failure(source);
-        log::debug!("Received a message that didn't match the secret");
+        log::debug!(peer_addr:% = source; "Received a message that didn't match the secret");
     }
 }
 

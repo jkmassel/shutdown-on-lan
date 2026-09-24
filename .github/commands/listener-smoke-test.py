@@ -199,10 +199,6 @@ else:
     print("::warning::IPv6 is unavailable – skipping the IPv6 checks")
 
 check("The secret never appears in the logs")
-debug_log = WORKDIR / "shutdown-on-lan.log"
-if debug_log.exists():
-    logs.append(debug_log.read_text(encoding="utf-8", errors="replace"))
-
 for log in logs:
     if SECRET in log:
         fail("The secret appears in the logs", log)

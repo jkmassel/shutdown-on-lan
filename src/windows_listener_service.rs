@@ -39,7 +39,7 @@ pub mod shutdown_on_lan_service {
     }
 
     // Service entry function which is called on background thread by the system with service
-    // parameters. There is no stdout or stderr at this point, so logging goes to a file.
+    // parameters. There is no stdout or stderr at this point, so logging goes to the event log.
     pub fn service_main(_arguments: Vec<OsString>) {
         if let Err(error) = run_service() {
             log::error!("Service failed: {}", error);

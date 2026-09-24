@@ -1,13 +1,11 @@
 use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use simplelog::*;
-use std::fs::OpenOptions;
-use std::path::PathBuf;
 use std::process;
 
 mod configuration;
 mod listener_service;
+mod logging;
 mod windows_listener_service;
 
 #[derive(Debug, Parser)]
@@ -68,10 +66,18 @@ enum Command {
 fn main() -> Result<()> {
     let args = AppArguments::parse();
 
-    init_logging(args.command.is_none());
+    let using_system_log = logging::init(args.command.is_none());
 
     match args.command {
-        None => run()?,
+        None => {
+            if let Err(error) = run() {
+                if using_system_log {
+                    log::error!("{:#}", error);
+                    process::exit(1);
+                }
+                return Err(error);
+            }
+        }
         Some(Command::Set {
             port,
             ip_address,
@@ -191,72 +197,6 @@ fn describe_sources(config: &AppConfiguration) -> String {
 
 fn get_app_configuration() -> Result<AppConfiguration> {
     AppConfiguration::load().context("Unable to read the configuration file")
-}
-
-fn init_logging(running_as_service: bool) {
-    let level = if cfg!(debug_assertions) {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
-    };
-
-    let mut loggers: Vec<Box<dyn SharedLogger>> = vec![TermLogger::new(
-        level,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )];
-
-    if let Some(path) = log_file_path(running_as_service) {
-        match OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(file) => loggers.push(WriteLogger::new(level, Config::default(), file)),
-            Err(error) => eprintln!("Unable to open log file at {}: {}", path.display(), error),
-        }
-    }
-
-    if let Err(error) = CombinedLogger::init(loggers) {
-        eprintln!("Unable to initialize logging: {}", error);
-    }
-
-    log::debug!("Logger Initialized");
-}
-
-// A Windows service has no terminal, so write its log to a file
-#[cfg(windows)]
-fn log_file_path(running_as_service: bool) -> Option<PathBuf> {
-    if !running_as_service {
-        return debug_log_file_path();
-    }
-
-    let directory = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("ShutdownOnLan");
-
-    if let Err(error) = std::fs::create_dir_all(&directory) {
-        eprintln!(
-            "Unable to create log directory {}: {}",
-            directory.display(),
-            error
-        );
-        return None;
-    }
-
-    Some(directory.join("shutdown-on-lan.log"))
-}
-
-// launchd captures the terminal output on macOS
-#[cfg(not(windows))]
-fn log_file_path(_running_as_service: bool) -> Option<PathBuf> {
-    debug_log_file_path()
-}
-
-fn debug_log_file_path() -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
-        Some(PathBuf::from("shutdown-on-lan.log"))
-    } else {
-        None
-    }
 }
 
 #[cfg(windows)]
