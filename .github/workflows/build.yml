@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: write
+  # Signing and recording build provenance attestations for the release assets
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,6 +41,10 @@ jobs:
         with:
           name: shutdown-on-lan-windows-installer.msi
           path: shutdown-on-lan-windows-installer.msi
+      - name: Attest Build Provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: shutdown-on-lan-windows-installer.msi
       - name: Attach Artifact to Release
         shell: bash
         run: gh release upload "$GITHUB_REF_NAME" shutdown-on-lan-windows-installer.msi
@@ -55,6 +63,10 @@ jobs:
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
+      - name: Attest Build Provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: build/mac/shutdownonlan.pkg
       - name: Attach Artifact to Release
         run: gh release upload "$GITHUB_REF_NAME" build/mac/shutdownonlan.pkg
 
@@ -83,6 +95,13 @@ jobs:
         with:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
+      - name: Attest Build Provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm
       - name: Attach Packages to Release
         run: |
           gh release upload "$GITHUB_REF_NAME" \
