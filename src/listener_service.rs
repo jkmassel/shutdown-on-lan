@@ -93,7 +93,7 @@ pub fn run(configuration: AppConfiguration) -> io::Result<()> {
 /// Accepts connections until it fails in a way that it can't recover from, and returns why.
 fn accept_connections(
     listener: &TcpListener,
-    configuration: &AppConfiguration,
+    configuration: &Arc<AppConfiguration>,
     slots: &Arc<ConnectionSlots>,
     throttle: &Arc<Throttle>,
 ) -> io::Error {
@@ -202,13 +202,14 @@ fn accept_connections(
             );
         }
 
-        let secret = configuration.secret.clone();
+        // Shared rather than cloned, so there's only ever one copy of the secret in memory
+        let configuration = Arc::clone(configuration);
         let throttle = Arc::clone(throttle);
 
         // If the thread can't be created, the connection and its slot are dropped with the closure
         let spawned = thread::Builder::new().spawn(move || {
             log::info!(peer_addr:% = peer_address.ip(); "New connection: {}", peer);
-            handle_stream(stream, &secret, &throttle, peer_address);
+            handle_stream(stream, &configuration.secret, &throttle, peer_address);
             drop(slot);
         });
 
