@@ -175,12 +175,28 @@ with Listener() as listener:
     if not 2.9 <= elapsed <= 6.5:
         fail(f"Expected a new connection to wait ~3.2s, but it took {elapsed:.2f}s", listener.output())
 
-check("Open connections are capped")
+check("Open connections from one source are capped")
 with Listener() as listener:
-    connections = [socket.create_connection(("127.0.0.1", PORT), timeout=10) for _ in range(33)]
-    listener.wait_for("too many open connections")
+    connections = [socket.create_connection(("127.0.0.1", PORT), timeout=10) for _ in range(5)]
+    listener.wait_for("too many open connections from this source")
     for connection in connections:
         connection.close()
+
+if socket.has_ipv6:
+    check("IPv6 connections are accepted")
+    cli("set", "--ip-address", "::1")
+    with Listener() as listener:
+        send(b"not-the-secret\n", host="::1")
+        listener.wait_for("Connection closed by [::1]")
+
+    check("IPv4 connections still match IPv4 addresses")
+    cli("set", "--ip-address", "127.0.0.1", "--allowed-sources", "127.0.0.1")
+    with Listener() as listener:
+        send(b"not-the-secret\n")
+        listener.wait_for("Connection closed by 127.0.0.1")
+    cli("set", "--allowed-sources", "")
+else:
+    print("::warning::IPv6 is unavailable – skipping the IPv6 checks")
 
 check("The secret never appears in the logs")
 debug_log = WORKDIR / "shutdown-on-lan.log"

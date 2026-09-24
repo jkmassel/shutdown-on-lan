@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [ '*' ]
+    # `**` rather than `*`, which doesn't match branch names containing a `/`
+    branches: [ '**' ]
   # Every base branch, so that stacked pull requests are checked too
   pull_request:
 
@@ -75,13 +76,35 @@ jobs:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
 
+  mac-installer:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the installer
+        run: build/mac/build-installer.sh
+      - name: Install the package
+        run: sudo installer -pkg build/mac/shutdownonlan.pkg -target /
+      - name: Test the installed service
+        run: sudo build/mac/test-package.sh
+      - name: Service and installer logs
+        if: failure()
+        run: |
+          sudo cat /var/log/shutdownonlan.log /var/log/shutdownonlan.error.log || true
+          sudo grep -A3 -i 'shutdownonlan\|postinstall' /var/log/install.log | tail -80 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shutdownonlan.pkg
+          path: build/mac/shutdownonlan.pkg
+
   validate-installer:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Validate Installer
-        run: .github/commands/build-for-windows.bat
+        shell: pwsh
+        run: .github/commands/build-for-windows.ps1
       - name: Verify no C runtime DLL dependencies
         shell: pwsh
         run: |

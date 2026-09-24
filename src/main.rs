@@ -1,62 +1,62 @@
-extern crate exitcode;
-extern crate log;
-extern crate simplelog;
-extern crate system_shutdown;
-
-use crate::configuration::{describe_addresses, format_addresses, AppConfiguration};
+use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use simplelog::*;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process;
-use structopt::StructOpt;
 
 mod configuration;
 mod listener_service;
 mod windows_listener_service;
 
-#[derive(Debug, StructOpt)]
-#[structopt(
+#[derive(Debug, Parser)]
+#[command(
     name = "shutdown-on-lan",
+    version,
     about = "A tool for implementing the opposite of wake-on-LAN – the ability to remotely shut down a machine."
 )]
 struct AppArguments {
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 enum Command {
+    /// Print the current configuration
     Get {
         /// Print the port number that this tool listens on (according to the local configuration file, if present)
-        #[structopt(long = "port")]
+        #[arg(long = "port")]
         port: bool,
 
         /// Print the IP address(es) that this tool listens on (according to the local configuration file, if present)
-        #[structopt(long = "ip-addresses")]
+        #[arg(long = "ip-addresses")]
         ip_addresses: bool,
 
         /// Print the client IP address(es) allowed to connect (according to the local configuration file, if present)
-        #[structopt(long = "allowed-sources")]
+        #[arg(long = "allowed-sources")]
         allowed_sources: bool,
 
         /// Print the secret that shuts this machine down
-        #[structopt(long = "secret")]
+        #[arg(long = "secret")]
         secret: bool,
     },
+    /// Change the configuration
     Set {
-        #[structopt(long = "port")]
+        /// The port to listen on
+        #[arg(long = "port")]
         port: Option<u16>,
 
         /// A comma-separated list of local interface IP addresses to accept connections on. Pass an empty string to accept connections on every interface.
-        #[structopt(long = "ip-address")]
+        #[arg(long = "ip-address")]
         ip_address: Option<String>,
 
-        #[structopt(long = "secret")]
+        /// The secret that shuts this machine down
+        #[arg(long = "secret")]
         secret: Option<String>,
 
         /// A comma-separated list of client IP addresses allowed to connect. Pass an empty string to allow any client.
-        #[structopt(long = "allowed-sources")]
+        #[arg(long = "allowed-sources")]
         allowed_sources: Option<String>,
     },
     /// Create the configuration, with a random secret, if it doesn't exist yet
@@ -66,7 +66,7 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    let args = AppArguments::from_args();
+    let args = AppArguments::parse();
 
     init_logging(args.command.is_none());
 

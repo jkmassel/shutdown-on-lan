@@ -6,7 +6,8 @@ license = "MPL-2.0"
 description = "Shuts this machine down when it receives a secret over the network – the opposite of wake-on-LAN"
 homepage = "https://github.com/jkmassel/shutdown-on-lan"
 repository = "https://github.com/jkmassel/shutdown-on-lan"
-edition = "2018"
+edition = "2024"
+rust-version = "1.88"
 default-run = "shutdown-on-lan"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -16,7 +17,6 @@ log = "0.4.28"
 simplelog = "^0.12.2"
 system_shutdown = "4.1.0"
 serde = { version = "1.0", features = ["derive"] }
-structopt = { version = "0.3", default-features = false }
 anyhow = "1.0.104"
 thiserror = "2"
 exitcode = "1.1.2"
@@ -24,10 +24,13 @@ getrandom = "0.4"
 
 # Fix security warning
 time = "0.3.47"
+socket2 = { version = "0.6.5", features = ["all"] }
+clap = { version = "4.6.7", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.56" }
 windows-service = "0.8.1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Registry"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 toml = "1.1.6"

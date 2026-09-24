@@ -5,82 +5,58 @@ on:
     tags:
       - '*'
 
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GH_REPO: ${{ github.repository }}
+
 jobs:
   setup:
     runs-on: ubuntu-latest
-    outputs:
-      uploadurl: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref }}
-          body: ""
-          draft: true
-          prerelease: false
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
 
   windows:
     runs-on: windows-latest
     needs: [setup]
     steps:
       - uses: actions/checkout@v4
+      - name: Run tests
+        run: cargo test -- --test-threads 1
       - name: Build
-        run: .github/commands/build-for-windows.bat
+        shell: pwsh
+        run: .github/commands/build-for-windows.ps1
+      - name: Name the installer
+        shell: bash
+        run: cp build/windows/Product.msi shutdown-on-lan-windows-installer.msi
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: shutdown-on-lan-windows-installer.msi
-          path: build/windows/Product.msi
+          path: shutdown-on-lan-windows-installer.msi
       - name: Attach Artifact to Release
-        id: upload-windows-release-asset 
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/windows/Product.msi
-          asset_name: shutdown-on-lan-windows-installer.msi
-          asset_content_type: application/octet-stream
+        shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" shutdown-on-lan-windows-installer.msi
 
   mac:
     runs-on: macos-latest
     needs: [setup]
     steps:
-      - name: Test
-        run: |
-          echo ${{ env.UPLOAD_URL }}
-          echo "${{ env.UPLOAD_URL }}"
-          echo $UPLOAD_URL
-          echo "Foo"
-          echo ${{needs.setup.outputs.uploadurl}}
       - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          cargo build --release
+      - name: Run tests
+        run: cargo test -- --test-threads 1
       - name: Package
-        run: |
-          cd build/mac
-          chmod +x build-installer.sh
-          ./build-installer.sh
+        run: build/mac/build-installer.sh
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
       - name: Attach Artifact to Release
-        id: upload-mac-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/mac/shutdownonlan.pkg
-          asset_name: shutdownonlan.pkg
-          asset_content_type: application/x-newton-compatible-pkg
+        run: gh release upload "$GITHUB_REF_NAME" build/mac/shutdownonlan.pkg
 
   linux:
     needs: [setup]
@@ -96,6 +72,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Run tests
+        run: cargo test -- --test-threads 1
       - name: Install packaging tools
         run: cargo install --locked cargo-deb cargo-generate-rpm
       - name: Build packages
@@ -105,30 +83,9 @@ jobs:
         with:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
-      - name: Attach Tarball to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
-          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
-          asset_content_type: application/gzip
-      - name: Attach .deb to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
-          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.deb
-          asset_content_type: application/vnd.debian.binary-package
-      - name: Attach .rpm to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{needs.setup.outputs.uploadurl}}
-          asset_path: build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm
-          asset_name: shutdown-on-lan-linux-${{ matrix.arch }}.rpm
-          asset_content_type: application/x-rpm
+      - name: Attach Packages to Release
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz \
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb \
+            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm

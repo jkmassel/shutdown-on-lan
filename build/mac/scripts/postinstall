@@ -8,6 +8,10 @@ launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || t
 ## configuration file written by older versions.
 /Library/Services/shutdownonlan init
 
+## Put the tool on the PATH, with the same name as on the other platforms
+mkdir -p /usr/local/bin
+ln -sf /Library/Services/shutdownonlan /usr/local/bin/shutdown-on-lan
+
 ## Start the process
 launchctl load -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
 

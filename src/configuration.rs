@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::net::{AddrParseError, IpAddr, Ipv4Addr};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{AddrParseError, IpAddr};
 #[cfg(not(windows))]
 use std::path::Path;
 use std::path::PathBuf;
-use std::vec;
 use thiserror::Error;
 
 #[cfg(windows)]
@@ -41,18 +39,6 @@ pub struct AppConfiguration {
     pub allowed_sources: Vec<IpAddr>,
 }
 
-pub trait AppConfigurationStorage {
-    fn fetch() -> Result<AppConfiguration, ConfigurationError>;
-    fn save(&self) -> Result<(), ConfigurationError>;
-    fn delete(&self) -> Result<(), ConfigurationError>;
-
-    fn configuration_storage_path() -> String;
-    fn configuration_file_path() -> String;
-
-    fn create_configuration_if_not_exists() -> Result<(), ConfigurationError>;
-    fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError>;
-}
-
 impl AppConfiguration {
     /// Reads the configuration, creating it from defaults first if needed.
     pub fn load() -> Result<AppConfiguration, ConfigurationError> {
@@ -73,6 +59,12 @@ impl AppConfiguration {
         Ok(())
     }
 
+    /// Checks the values that can't be checked while parsing – a secret written by hand (or managed by a
+    /// configuration profile) could be empty, which would never match.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        validate_secret(&self.secret)
+    }
+
     pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
         validate_secret(&secret)?;
         self.secret = secret;
@@ -81,13 +73,20 @@ impl AppConfiguration {
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
-        self.addresses.is_empty() || self.addresses.contains(ip)
+        self.addresses.is_empty() || contains_address(&self.addresses, ip)
     }
 
     /// Whether a client at `ip` is allowed to connect.
     pub fn accepts_connections_from(&self, ip: &IpAddr) -> bool {
-        self.allowed_sources.is_empty() || self.allowed_sources.contains(ip)
+        self.allowed_sources.is_empty() || contains_address(&self.allowed_sources, ip)
     }
+}
+
+/// Treats an IPv4 address and the IPv4-mapped IPv6 form of it (`::ffff:10.0.1.50`) as the same address.
+fn contains_address(addresses: &[IpAddr], ip: &IpAddr) -> bool {
+    addresses
+        .iter()
+        .any(|address| address.to_canonical() == ip.to_canonical())
 }
 
 fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
@@ -365,8 +364,13 @@ impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         let path = Self::configuration_file_path();
 
-        let string = std::fs::read_to_string(path)
-            .map_err(|error| ConfigurationError::InvalidConfigurationFile { source: error })?;
+        let string = std::fs::read_to_string(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigurationError::RequiresRoot
+            } else {
+                ConfigurationError::InvalidConfigurationFile { source: error }
+            }
+        })?;
 
         Self::from_toml(&string)
     }
@@ -376,9 +380,13 @@ impl AppConfiguration {
 
         let path = PathBuf::from(Self::configuration_file_path());
         write_private_file(&path, string.as_bytes()).map_err(|error| {
-            ConfigurationError::ConfigurationFileUnwritable {
-                source: error,
-                path: path.into_os_string().into_string().unwrap(),
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigurationError::RequiresRoot
+            } else {
+                ConfigurationError::ConfigurationFileUnwritable {
+                    source: error,
+                    path: path.into_os_string().into_string().unwrap(),
+                }
             }
         })
     }
@@ -454,14 +462,11 @@ impl AppConfiguration {
         self.save_to(&Registry::with_default_root_key()?)
     }
 
-    pub fn create_configuration_storage_if_not_exists() -> Result<(), ConfigurationError> {
-        Registry::with_default_root_key()?;
-        Ok(())
-    }
-
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::info!("Checking whether configuration needs to be created");
-        Self::write_missing_defaults(&Registry::with_default_root_key()?)
+        let registry = Registry::with_default_root_key()?;
+        registry.restrict_access()?;
+        Self::write_missing_defaults(&registry)
     }
 
     fn fetch_from(registry: &Registry) -> Result<AppConfiguration, ConfigurationError> {
@@ -571,30 +576,6 @@ impl std::fmt::Debug for AppConfiguration {
     }
 }
 
-impl ToSocketAddrs for AppConfiguration {
-    type Iter = vec::IntoIter<SocketAddr>;
-
-    fn to_socket_addrs(&self) -> std::io::Result<vec::IntoIter<SocketAddr>> {
-        let mut addresses: Vec<SocketAddr> = Vec::new();
-
-        log::info!(
-            "Read configuration with port number: {:?}",
-            self.port_number
-        );
-
-        // Bind every interface rather than just the configured `addresses`. On Windows the service starts
-        // before the network interfaces are up, so binding a specific address fails at boot and the service
-        // never listens. Instead, `listener_service` rejects connections that arrive on interfaces that
-        // aren't in `addresses` after `accept`.
-        let address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
-
-        addresses.push(SocketAddr::from((address, self.port_number)));
-
-        let ret = addresses.into_iter();
-        Ok(ret)
-    }
-}
-
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigurationRegistryKeys {
@@ -655,6 +636,57 @@ impl Registry {
         }
 
         Ok(Registry { root_key: key })
+    }
+
+    /// Lets only SYSTEM and Administrators open the key. It holds the secret, and keys under
+    /// `HKEY_LOCAL_MACHINE\SOFTWARE` otherwise inherit read access for every user.
+    fn restrict_access(&self) -> Result<(), ConfigurationError> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        };
+        use windows_sys::Win32::System::Registry::RegSetKeySecurity;
+
+        // Full control for SYSTEM and Administrators, without inheriting anything from the parent key
+        let sddl: Vec<u16> = "D:P(A;OICI;KA;;;SY)(A;OICI;KA;;;BA)"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(ConfigurationError::RegistryAccessNotRestricted(
+                std::io::Error::last_os_error(),
+            ));
+        }
+
+        let status = unsafe {
+            RegSetKeySecurity(
+                self.root_key.raw_handle() as _,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+        };
+        unsafe { LocalFree(descriptor as _) };
+
+        if status != 0 {
+            return Err(ConfigurationError::RegistryAccessNotRestricted(
+                std::io::Error::from_raw_os_error(status as i32),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Whether `key` has a value. Errors other than the value being absent are reported, so that a
@@ -939,23 +971,41 @@ impl Preferences {
 
 /// Replaces the contents of `path` with `contents`, leaving the file readable only by its owner – it
 /// holds the secret, which any local user could otherwise read.
+///
+/// The contents are written to a temporary file that then replaces `path`, so a crash or a full disk
+/// part-way through leaves the previous contents in place rather than an empty or truncated file.
 #[cfg(unix)]
 fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    // Truncate the file – otherwise a shorter configuration would leave the tail of the previous one
-    // behind, corrupting the file.
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(path.file_name().unwrap_or_default());
+    temporary_name.push(".tmp");
+    let temporary_path = path.with_file_name(temporary_name);
 
-    // `mode` only applies when the file is created, so also restrict a file written by an older version
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(contents)
+    let result = (|| {
+        // Truncate a temporary file left behind by an earlier attempt
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary_path)?;
+
+        // `mode` only applies when the file is created, so also restrict a leftover temporary file
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+
+        std::fs::rename(&temporary_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+
+    result
 }
 
 #[derive(Error, Debug)]
@@ -964,7 +1014,7 @@ pub enum ConfigurationError {
     MissingConfigurationFile(#[from] std::io::Error),
 
     #[cfg(target_os = "linux")]
-    #[error("Contents of Configuration File Are Invalid")]
+    #[error("Unable to read the configuration file")]
     InvalidConfigurationFile { source: std::io::Error },
 
     #[cfg(target_os = "macos")]
@@ -975,7 +1025,7 @@ pub enum ConfigurationError {
     #[error("The {0} preference is missing or invalid")]
     PreferenceNotReadable(&'static str),
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(windows))]
     #[error("Only root can read or change the configuration – try again with sudo")]
     RequiresRoot,
 
@@ -1006,6 +1056,10 @@ pub enum ConfigurationError {
     #[cfg(windows)]
     #[error("Unable to open the configuration registry key")]
     RegistryUnavailable(#[source] std::io::Error),
+
+    #[cfg(windows)]
+    #[error("Unable to restrict access to the configuration registry key")]
+    RegistryAccessNotRestricted(#[source] std::io::Error),
 
     #[cfg(windows)]
     #[error("Unable to read registry value {0:?}")]
@@ -1053,9 +1107,11 @@ mod tests {
         let mut configuration = AppConfiguration::default();
         configuration.set_addresses("10.0.1.100").unwrap();
 
-        assert!(configuration
-            .set_addresses("10.0.1.100,10.0.1.300")
-            .is_err());
+        assert!(
+            configuration
+                .set_addresses("10.0.1.100,10.0.1.300")
+                .is_err()
+        );
         assert_eq!(
             configuration.addresses,
             vec!["10.0.1.100".parse::<IpAddr>().unwrap()]
@@ -1086,16 +1142,33 @@ mod tests {
     }
 
     #[test]
+    fn test_ipv4_mapped_addresses_match_ipv4_addresses() {
+        let mut configuration = AppConfiguration::default();
+        configuration.set_addresses("10.0.1.100").unwrap();
+        configuration
+            .set_allowed_sources("::ffff:10.0.1.50")
+            .unwrap();
+
+        assert!(configuration.accepts_connections_on(&"::ffff:10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_from(&"10.0.1.50".parse().unwrap()));
+        assert!(!configuration.accepts_connections_from(&"::1".parse().unwrap()));
+    }
+
+    #[test]
     fn test_set_secret_enforces_length_limits() {
         let mut configuration = AppConfiguration::default();
 
         assert!(configuration.set_secret(String::new()).is_err());
-        assert!(configuration
-            .set_secret("a".repeat(MAX_SECRET_LENGTH + 1))
-            .is_err());
-        assert!(configuration
-            .set_secret("a".repeat(MAX_SECRET_LENGTH))
-            .is_ok());
+        assert!(
+            configuration
+                .set_secret("a".repeat(MAX_SECRET_LENGTH + 1))
+                .is_err()
+        );
+        assert!(
+            configuration
+                .set_secret("a".repeat(MAX_SECRET_LENGTH))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1153,6 +1226,27 @@ mod tests {
 
         assert_eq!(final_mode, 0o600);
         assert_eq!(contents, b"second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_writing_a_file_leaves_no_temporary_file_behind() {
+        let directory = std::env::temp_dir().join(format!(
+            "shutdown-on-lan-test-{}-atomic",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("configuration");
+
+        write_private_file(&path, b"a longer first version").unwrap();
+        write_private_file(&path, b"second").unwrap();
+
+        let contents = std::fs::read(&path).unwrap();
+        let entries = std::fs::read_dir(&directory).unwrap().count();
+        std::fs::remove_dir_all(&directory).unwrap();
+
+        assert_eq!(contents, b"second");
+        assert_eq!(entries, 1);
     }
 
     /// Storage in a temporary directory (so no root is needed) that's deleted when the test finishes. The
@@ -1464,10 +1558,12 @@ mod tests {
             addresses = ["127.0.0.1"]
             secret = "Super Secret String"
         "#;
-        assert!(AppConfiguration::from_toml(hand_written)
-            .unwrap()
-            .allowed_sources
-            .is_empty());
+        assert!(
+            AppConfiguration::from_toml(hand_written)
+                .unwrap()
+                .allowed_sources
+                .is_empty()
+        );
     }
 
     /// A registry key under `HKEY_CURRENT_USER` (so no admin rights are needed) that's deleted when

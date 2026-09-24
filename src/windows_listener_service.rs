@@ -1,7 +1,5 @@
 #[cfg(windows)]
 pub mod shutdown_on_lan_service {
-    extern crate windows_service;
-
     use crate::{configuration::AppConfiguration, listener_service};
 
     use std::{ffi::OsString, sync::mpsc, thread, time::Duration};
@@ -9,16 +7,17 @@ pub mod shutdown_on_lan_service {
     use anyhow::anyhow;
 
     use windows_service::{
-        define_windows_service,
+        Result, define_windows_service,
         service::{
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
             ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
-        service_dispatcher, Result,
+        service_dispatcher,
     };
 
-    const SERVICE_NAME: &str = "shutdown-on-lan";
+    // Must match the name the installer registers the service with in `Product.wxs`
+    const SERVICE_NAME: &str = "ShutdownOnLan";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
     pub fn run() -> anyhow::Result<()> {

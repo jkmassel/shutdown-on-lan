@@ -21,3 +21,14 @@ shutdown-on-lan.log
 
 # Linux packages
 build/linux/dist
+
+# macOS installer output
+/build/mac/root/
+/build/mac/shutdownonlan.pkg
+
+# Windows installer output
+/build/windows/shutdown-on-lan.exe
+/build/windows/*.msi
+/build/windows/*.wixobj
+/build/windows/*.wixpdb
+/msi-*.log
