@@ -6,7 +6,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use system_shutdown::shutdown;
 
 use crate::configuration::{
     AppConfiguration, MAX_SECRET_LENGTH, describe_addresses, format_addresses,
@@ -435,7 +434,7 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
         Ok(true) => {
             log::info!(peer_addr:% = peer.ip(); "Shutting down - source: {}", peer);
 
-            if let Err(error) = shutdown() {
+            if let Err(error) = shut_down() {
                 log::error!("Failed to shut down: {}", error);
             }
         }
@@ -444,6 +443,39 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
             log::warn!(peer_addr:% = peer.ip(); "Terminating connection with {}: {}", peer, error)
         }
     }
+}
+
+/// Shuts the machine down.
+///
+/// On macOS this runs `shutdown` rather than using `system_shutdown`, which asks System Events to shut down
+/// over AppleScript. The service is a root LaunchDaemon, so there's no GUI session to answer the Automation
+/// permission prompt that needs (at the login window, there's no session at all), and apps can cancel that
+/// kind of shutdown anyway.
+#[cfg(target_os = "macos")]
+fn shut_down() -> io::Result<()> {
+    let output = shutdown_command().output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "`shutdown` exited with {} – {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shutdown_command() -> std::process::Command {
+    let mut command = std::process::Command::new("/sbin/shutdown");
+    command.args(["-h", "now"]);
+    command
+}
+
+#[cfg(not(target_os = "macos"))]
+fn shut_down() -> io::Result<()> {
+    system_shutdown::shutdown()
 }
 
 /// Reads newline-delimited messages until one matches `secret` (returning `true`) or the client closes
@@ -650,6 +682,14 @@ mod tests {
         assert!(!affects_only_this_connection(&io::Error::other(
             "too many open files"
         )));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_shuts_down_without_asking_system_events() {
+        let command = shutdown_command();
+        assert_eq!(command.get_program(), "/sbin/shutdown");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["-h", "now"]);
     }
 
     #[test]
