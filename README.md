@@ -16,7 +16,7 @@ Installers are provided for Windows, macOS and Linux. Each installation generate
 Customizing the IP address field allows you to specify which interfaces the service will accept connections on, which is useful when the machine is connected to more than one network – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list, and both IPv4 and IPv6 addresses are supported. Connections arriving on any other interface are closed without being read. By default this is empty, which accepts connections on every interface. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
 
 ##### Allowed Sources
-Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect. As with the IP address, you should use a DHCP reservation or a static address for each client.
+Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect (on Windows, the firewall rule the installer adds only allows the local subnet – see below). As with the IP address, you should use a DHCP reservation or a static address for each client.
 
 On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 10.0.1.50`. On Windows, it's the `allowed_sources` registry value.
 
@@ -31,8 +31,9 @@ _The secret can't be empty or longer than 4096 bytes, and can't start or end wit
 #### Windows
 1. Download the latest version of the application and run the installer.
 2. Windows may warn that this software is from an unknown author and provide a popup saying "Windows Protected your PC". Click "More Info" then "Run Anyway".
-3. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above. The key holds the secret, so only SYSTEM and Administrators can read it – run the Registry Editor as an administrator.
-4. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
+3. The installer adds a Windows Defender Firewall rule for the service that only allows connections from the local subnet – so on Windows, clients on other subnets can't connect even when the allowed sources are empty. To allow them, widen the scope of the `ShutdownOnLan` inbound rule in Windows Defender Firewall with Advanced Security. An upgrade replaces the rule, so widen it again after upgrading.
+4. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above. The key holds the secret, so only SYSTEM and Administrators can read it – run the Registry Editor as an administrator.
+5. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
 
 #### Mac
 1. Download the latest version of the application and run the installer. It runs on both Apple silicon and Intel Macs.
