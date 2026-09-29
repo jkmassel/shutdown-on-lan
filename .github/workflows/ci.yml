@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Install packaging tools
-        run: cargo install --locked cargo-deb cargo-generate-rpm
+        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.0
       - name: Build packages
         run: build/linux/build-packages.sh ${{ matrix.arch }}
       - name: Install the .deb
