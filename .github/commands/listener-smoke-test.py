@@ -35,9 +35,9 @@ def fail(message, output=""):
     sys.exit(1)
 
 
-def cli(*args, expect_success=True):
+def cli(*args, expect_success=True, input=None):
     result = subprocess.run(
-        [str(BINARY), *args], cwd=WORKDIR, env=ENV, capture_output=True, text=True
+        [str(BINARY), *args], cwd=WORKDIR, env=ENV, capture_output=True, text=True, input=input
     )
     output = result.stdout + result.stderr
     logs.append(output)
@@ -135,6 +135,13 @@ output = cli("get", "--port", "--ip-addresses", "--allowed-sources")
 for expected in (f"Current Port: {PORT}", "Listening IP Addresses: 127.0.0.1", "Allowed Sources: 192.0.2.1"):
     if expected not in output:
         fail(f"`get` output is missing {expected!r}", output)
+
+check("`set --secret -` reads the secret from standard input")
+cli("set", "--secret", "-", input="from-standard-input\n")
+output = cli("get", "--secret")
+if "Secret: from-standard-input" not in output:
+    fail("`set --secret -` didn't set the secret from standard input", output)
+cli("set", "--secret", SECRET)
 
 check("Clients not in `allowed_sources` are rejected")
 with Listener() as listener:

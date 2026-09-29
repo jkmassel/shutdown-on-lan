@@ -24,7 +24,7 @@ On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
 
 ##### Secret
-The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine!
+The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine! On macOS and Linux, `shutdown-on-lan set --secret -` reads the new secret from standard input (for instance, `read -rs SECRET && echo "$SECRET" | sudo shutdown-on-lan set --secret -`), which keeps it out of the process list and `sudo`'s log – passing it as `--secret 'the secret'` puts it in both.
 
 _The secret can't be empty or longer than 4096 bytes, and can't start or end with whitespace or contain a line break._
 
