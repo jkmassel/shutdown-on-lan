@@ -21,8 +21,6 @@ thiserror = "2"
 exitcode = "1.1.2"
 getrandom = "0.4"
 
-# Fix security warning
-time = "0.3.47"
 socket2 = { version = "0.6.5", features = ["all"] }
 clap = { version = "4.6.7", features = ["derive"] }
 

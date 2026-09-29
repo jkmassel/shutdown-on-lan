@@ -930,7 +930,6 @@ dependencies = [
  "system_shutdown",
  "systemd-journal-logger",
  "thiserror 2.0.21",
- "time",
  "toml",
  "windows-service",
  "windows-sys",
