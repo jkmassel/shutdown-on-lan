@@ -82,7 +82,17 @@ sudo firewall-cmd --permanent --add-service=shutdown-on-lan && sudo firewall-cmd
 sudo ufw allow shutdown-on-lan
 ```
 
-The profiles use the default port – if you've changed it, change it in `/usr/lib/firewalld/services/shutdown-on-lan.xml` or `/etc/ufw/applications.d/shutdown-on-lan` too.
+The profiles use the default port. If you've changed it, change it in the profiles too:
+
+- **firewalld:** copy the profile to `/etc/firewalld/services/` and change the port in the copy, which takes precedence – upgrading the package replaces the original in `/usr/lib/firewalld/services/`, but never touches `/etc`:
+
+```
+sudo cp /usr/lib/firewalld/services/shutdown-on-lan.xml /etc/firewalld/services/
+# Change the port in /etc/firewalld/services/shutdown-on-lan.xml, then:
+sudo firewall-cmd --reload
+```
+
+- **ufw:** change it in `/etc/ufw/applications.d/shutdown-on-lan`, which upgrades never overwrite.
 
 ##### Other distributions
 The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit and the firewall profiles:

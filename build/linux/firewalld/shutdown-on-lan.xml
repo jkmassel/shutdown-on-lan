@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <service>
   <short>Shutdown on LAN</short>
-  <description>Allows this machine to be shut down remotely by sending a secret over the network. If you've changed the port in /etc/shutdown-on-lan.toml, change it here too.</description>
+  <description>Allows this machine to be shut down remotely by sending a secret over the network. If you've changed the port in /etc/shutdown-on-lan.toml, copy this file to /etc/firewalld/services/ and change it there – a copy in /usr/lib/firewalld/services/ is replaced when the package is upgraded.</description>
   <port protocol="tcp" port="53632"/>
 </service>
