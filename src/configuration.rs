@@ -241,7 +241,15 @@ pub fn format_addresses(addresses: &[IpAddr]) -> String {
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::debug!("Fetching App Configuration");
-        Self::fetch_from(&Storage::system())
+        let storage = Storage::system();
+
+        for key in storage.preferences.keys_in_own_domain() {
+            log::warn!(
+                "Ignoring {key} in root's own preferences, where `sudo defaults write {PREFERENCES_DOMAIN}` puts it. Use `shutdown-on-lan set`, or `defaults write {PREFERENCES_FILE}`, instead, and remove it with `sudo defaults delete {PREFERENCES_DOMAIN}`."
+            );
+        }
+
+        Self::fetch_from(&storage)
     }
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
@@ -996,6 +1004,12 @@ impl PreferenceKeys {
     const ADDRESSES: &'static str = "addresses";
     const SECRET: &'static str = "secret";
     const ALLOWED_SOURCES: &'static str = "allowed_sources";
+    const ALL: [&'static str; 4] = [
+        Self::PORT,
+        Self::ADDRESSES,
+        Self::SECRET,
+        Self::ALLOWED_SOURCES,
+    ];
 }
 
 #[cfg(target_os = "macos")]
@@ -1131,8 +1145,8 @@ impl Storage {
     }
 }
 
-/// A preferences domain. Reads go through the standard search list, so values managed by a configuration
-/// profile take precedence. Writes go to `user`, for any host.
+/// A preferences domain. Reads and writes go to `user`, for any host – except that values managed by a
+/// configuration profile take precedence when reading.
 #[cfg(target_os = "macos")]
 struct Preferences {
     application_id: CFString,
@@ -1149,7 +1163,23 @@ impl Preferences {
         }
     }
 
+    /// Reads `key` from a configuration profile if one manages it, and otherwise from the domain `set` writes
+    /// to.
+    ///
+    /// Not with `CFPreferencesCopyAppValue` on its own, which would also look in the current user's own
+    /// domain first. `sudo defaults write com.jkmassel.shutdownonlan …` – naming the domain rather than the
+    /// plist's path – writes to root's, so the value would hide every later `set`, which would report that
+    /// it saved the change while nothing changed.
     fn get(&self, key: &str) -> Option<CFPropertyList> {
+        if self.is_forced(key) {
+            self.get_managed(key)
+        } else {
+            self.get_local(key)
+        }
+    }
+
+    /// Through the standard search list, which puts values managed by a configuration profile first.
+    fn get_managed(&self, key: &str) -> Option<CFPropertyList> {
         let key = CFString::new(key);
         let value = unsafe {
             core_foundation_sys::preferences::CFPreferencesCopyAppValue(
@@ -1161,19 +1191,33 @@ impl Preferences {
         Self::wrap(value)
     }
 
-    /// Like `get`, but only looks in the domain that `set` writes to.
+    /// Only looks in the domain that `set` writes to.
     fn get_local(&self, key: &str) -> Option<CFPropertyList> {
+        self.get_for_user(key, self.user)
+    }
+
+    fn get_for_user(&self, key: &str, user: CFStringRef) -> Option<CFPropertyList> {
         let key = CFString::new(key);
         let value = unsafe {
             core_foundation_sys::preferences::CFPreferencesCopyValue(
                 key.as_concrete_TypeRef(),
                 self.application_id.as_concrete_TypeRef(),
-                self.user,
+                user,
                 core_foundation_sys::preferences::kCFPreferencesAnyHost,
             )
         };
 
         Self::wrap(value)
+    }
+
+    /// The keys set in the current user's own domain, which `get` ignores.
+    fn keys_in_own_domain(&self) -> Vec<&'static str> {
+        let current_user = unsafe { core_foundation_sys::preferences::kCFPreferencesCurrentUser };
+
+        PreferenceKeys::ALL
+            .into_iter()
+            .filter(|key| self.get_for_user(key, current_user).is_some())
+            .collect()
     }
 
     fn wrap(value: core_foundation_sys::propertylist::CFPropertyListRef) -> Option<CFPropertyList> {
