@@ -101,12 +101,19 @@ The `.tar.gz` contains a statically linked binary that runs on any distribution,
 ```
 tar -xzf shutdown-on-lan-linux-x86_64.tar.gz && cd shutdown-on-lan
 sudo install -m 755 shutdown-on-lan /usr/bin/
-sudo shutdown-on-lan init
 sudo install -m 644 shutdown-on-lan.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now shutdown-on-lan
 ```
 
-The service can't write to `/etc`, so `shutdown-on-lan init` creates `/etc/shutdown-on-lan.toml` (with a random secret) before it starts.
+The service creates `/etc/shutdown-on-lan.toml`, with a random secret, when it first starts.
+
+#### Cloned machines and images
+Every installation generates its own secret, so that knowing one machine's secret doesn't let anyone shut down the others. On Linux, the service generates it when it first starts, so each machine cloned from an image the package was installed in (without the service having started) gets its own. On macOS and Windows – and on Linux, once the service has started – the secret already exists, and every clone shares it. To give a clone its own secret:
+
+- **macOS and Linux:** `openssl rand -hex 16 | sudo shutdown-on-lan set --secret -`, then restart the service.
+- **Windows:** in an administrative PowerShell, `Remove-ItemProperty HKLM:\SOFTWARE\ShutdownOnLan -Name secret; Restart-Service ShutdownOnLan` – the service generates a new one when it starts.
+
+Either way, give the new secret to your control system. When building an image on Linux, you can instead delete `/etc/shutdown-on-lan.toml` before capturing it.
 
 ### How to use
 

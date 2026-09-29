@@ -55,4 +55,15 @@ if journalctl -u shutdown-on-lan --no-pager -o cat | grep "panicked at"; then
     exit 1
 fi
 
+echo "--- The service creates the configuration when it's missing, as on the first boot of a cloned image"
+secret="$(shutdown-on-lan get --secret)"
+systemctl stop shutdown-on-lan
+mv /etc/shutdown-on-lan.toml /etc/shutdown-on-lan.toml.original
+systemctl start shutdown-on-lan
+test "$(stat -c '%a %U' /etc/shutdown-on-lan.toml)" = "600 root"
+test "$(shutdown-on-lan get --secret)" != "$secret"
+systemctl is-active shutdown-on-lan
+mv /etc/shutdown-on-lan.toml.original /etc/shutdown-on-lan.toml
+systemctl restart shutdown-on-lan
+
 echo "--- Package test passed"

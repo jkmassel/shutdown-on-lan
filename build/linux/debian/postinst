@@ -1,10 +1,7 @@
 #!/bin/sh
 set -e
 
-# Creates /etc/shutdown-on-lan.toml with a random secret, unless it already exists. The package doesn't
-# ship it, because every installation needs its own secret.
-if [ "$1" = "configure" ]; then
-    shutdown-on-lan init
-fi
+# The configuration isn't created here – the service creates it when it first starts, so that every machine
+# cloned from an image the package was installed in gets its own secret.
 
 #DEBHELPER#

@@ -61,7 +61,8 @@ assets = [
     ["build/linux/ufw/shutdown-on-lan", "etc/ufw/applications.d/", "644"],
     ["README.md", "usr/share/doc/shutdown-on-lan/", "644"],
 ]
-# `postinst` creates the configuration with a random secret, so starting the service on install is safe
+# The service creates the configuration with a random secret when it first starts, so starting it on install
+# is safe
 systemd-units = { unit-scripts = "build/linux", enable = true, start = true }
 maintainer-scripts = "build/linux/debian"
 
