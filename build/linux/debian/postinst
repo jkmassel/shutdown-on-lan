@@ -4,4 +4,17 @@ set -e
 # The configuration isn't created here – the service creates it when it first starts, so that every machine
 # cloned from an image the package was installed in gets its own secret.
 
+if [ "$1" = "configure" ]; then
+    # Reserve the default port straight away, rather than only from the next boot, when the sysctl.d file is read.
+    # It's added to the current list, rather than applying the file, which would replace any other reserved ports.
+    reserved=/proc/sys/net/ipv4/ip_local_reserved_ports
+    if [ -w "$reserved" ]; then
+        current="$(cat "$reserved")"
+        case ",$current," in
+            *,53632,*) ;;
+            *) echo "${current:+$current,}53632" > "$reserved" || true ;;
+        esac
+    fi
+fi
+
 #DEBHELPER#

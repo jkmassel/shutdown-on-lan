@@ -57,6 +57,7 @@ depends = ""
 assets = [
     ["target/release/shutdown-on-lan", "usr/bin/", "755"],
     ["build/linux/firewalld/shutdown-on-lan.xml", "usr/lib/firewalld/services/", "644"],
+    ["build/linux/sysctl/40-shutdown-on-lan.conf", "usr/lib/sysctl.d/", "644"],
     # Everything in /etc is a conffile, so upgrades never overwrite a user's changes
     ["build/linux/ufw/shutdown-on-lan", "etc/ufw/applications.d/", "644"],
     ["README.md", "usr/share/doc/shutdown-on-lan/", "644"],
@@ -71,6 +72,7 @@ assets = [
     { source = "target/release/shutdown-on-lan", dest = "/usr/bin/shutdown-on-lan", mode = "755" },
     { source = "build/linux/shutdown-on-lan.service", dest = "/usr/lib/systemd/system/shutdown-on-lan.service", mode = "644" },
     { source = "build/linux/firewalld/shutdown-on-lan.xml", dest = "/usr/lib/firewalld/services/shutdown-on-lan.xml", mode = "644" },
+    { source = "build/linux/sysctl/40-shutdown-on-lan.conf", dest = "/usr/lib/sysctl.d/40-shutdown-on-lan.conf", mode = "644" },
     { source = "build/linux/ufw/shutdown-on-lan", dest = "/etc/ufw/applications.d/shutdown-on-lan", mode = "644", config = "noreplace" },
     { source = "README.md", dest = "/usr/share/doc/shutdown-on-lan/README.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/shutdown-on-lan/LICENSE", mode = "644", doc = true },

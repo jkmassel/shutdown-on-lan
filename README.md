@@ -23,6 +23,8 @@ On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 
 ##### Port
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
 
+On Linux, the packages reserve the default port, so that the kernel never picks it as the local port of an outgoing connection – which would stop the service from starting – with `/usr/lib/sysctl.d/40-shutdown-on-lan.conf`. If you change the port, or reserve other ports with `net.ipv4.ip_local_reserved_ports` yourself, see that file.
+
 ##### Secret
 The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine! On macOS and Linux, `shutdown-on-lan set --secret -` reads the new secret from standard input (for instance, `read -rs SECRET && echo "$SECRET" | sudo shutdown-on-lan set --secret -`), which keeps it out of the process list and `sudo`'s log – passing it as `--secret 'the secret'` puts it in both.
 
@@ -96,12 +98,13 @@ sudo firewall-cmd --reload
 - **ufw:** change it in `/etc/ufw/applications.d/shutdown-on-lan`, which upgrades never overwrite.
 
 ##### Other distributions
-The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit and the firewall profiles:
+The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit, the firewall profiles, and the file that reserves the default port:
 
 ```
 tar -xzf shutdown-on-lan-linux-x86_64.tar.gz && cd shutdown-on-lan
 sudo install -m 755 shutdown-on-lan /usr/bin/
 sudo install -m 644 shutdown-on-lan.service /etc/systemd/system/
+sudo install -m 644 40-shutdown-on-lan.conf /etc/sysctl.d/ && sudo sysctl --system
 sudo systemctl daemon-reload && sudo systemctl enable --now shutdown-on-lan
 ```
 
