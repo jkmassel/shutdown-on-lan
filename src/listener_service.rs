@@ -359,7 +359,17 @@ fn enable_keepalive(stream: &TcpStream) -> io::Result<()> {
     )
 }
 
-/// Counts open connections, in total and by source address.
+/// What connection limits and wrong-secret throttling are tracked by: the address for IPv4, and the /64
+/// network for IPv6. A host can use any number of addresses in its /64 – with privacy extensions it does so
+/// routinely – so tracking each IPv6 address separately would let one host get around both.
+fn source_of(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(ip) => IpAddr::V6(Ipv6Addr::from_bits(ip.to_bits() & !(u64::MAX as u128))),
+        ip => ip,
+    }
+}
+
+/// Counts open connections, in total and by source – see `source_of`.
 struct ConnectionSlots {
     limit: usize,
     per_source_limit: usize,
@@ -393,8 +403,9 @@ impl ConnectionSlots {
         self.open.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// Takes a slot for a connection from `source`, which is released when the returned value is dropped.
-    fn acquire(slots: &Arc<ConnectionSlots>, source: IpAddr) -> Result<ConnectionSlot, SlotError> {
+    /// Takes a slot for a connection from `peer`, which is released when the returned value is dropped.
+    fn acquire(slots: &Arc<ConnectionSlots>, peer: IpAddr) -> Result<ConnectionSlot, SlotError> {
+        let source = source_of(peer);
         let mut open = slots.lock();
 
         if open.by_source.get(&source).copied().unwrap_or(0) >= slots.per_source_limit {
@@ -532,8 +543,8 @@ struct SourceState {
     next_attempt: Instant,
 }
 
-/// Spaces out secret attempts from each source address, with the gap growing exponentially as wrong
-/// guesses accumulate. Tracking by source rather than by connection means opening more connections
+/// Spaces out secret attempts from each source (see `source_of`), with the gap growing exponentially as
+/// wrong guesses accumulate. Tracking by source rather than by connection means opening more connections
 /// doesn't buy more guesses.
 struct Throttle {
     initial_delay: Duration,
@@ -551,7 +562,8 @@ impl Throttle {
     }
 
     /// Reserves the next attempt slot for `source`, returning how long to wait before using it.
-    fn reserve_attempt(&self, source: IpAddr, now: Instant) -> Duration {
+    fn reserve_attempt(&self, peer: IpAddr, now: Instant) -> Duration {
+        let source = source_of(peer);
         let mut sources = self
             .sources
             .lock()
@@ -570,7 +582,8 @@ impl Throttle {
         start - now
     }
 
-    fn record_failure(&self, source: IpAddr) {
+    fn record_failure(&self, peer: IpAddr) {
+        let source = source_of(peer);
         let mut sources = self
             .sources
             .lock()
@@ -803,6 +816,35 @@ mod tests {
     }
 
     #[test]
+    fn test_ipv6_sources_are_grouped_by_64_bit_prefix() {
+        assert_eq!(
+            source_of("2001:db8:1:2:aaaa::1".parse().unwrap()),
+            "2001:db8:1:2::".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            source_of("::ffff:10.0.1.50".parse().unwrap()),
+            "10.0.1.50".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(source_of(source()), source());
+    }
+
+    #[test]
+    fn test_changing_ipv6_address_does_not_get_around_the_connection_cap() {
+        let slots = slots();
+
+        let _held = [
+            ConnectionSlots::acquire(&slots, "2001:db8::1".parse().unwrap()).unwrap(),
+            ConnectionSlots::acquire(&slots, "2001:db8::2".parse().unwrap()).unwrap(),
+        ];
+
+        assert_eq!(
+            ConnectionSlots::acquire(&slots, "2001:db8::3".parse().unwrap()).err(),
+            Some(SlotError::TooManyConnectionsFromSource)
+        );
+        assert!(ConnectionSlots::acquire(&slots, "2001:db8:0:1::1".parse().unwrap()).is_ok());
+    }
+
+    #[test]
     fn test_released_slots_are_forgotten() {
         let slots = slots();
         drop(ConnectionSlots::acquire(&slots, source()).unwrap());
@@ -982,6 +1024,20 @@ mod tests {
 
         assert_eq!(
             throttle.reserve_attempt("10.0.1.51".parse().unwrap(), now),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn test_changing_ipv6_address_does_not_get_around_the_throttle() {
+        let throttle = throttle();
+        let now = Instant::now();
+
+        fail(&throttle, "2001:db8::1".parse().unwrap(), now, 20);
+
+        assert!(throttle.reserve_attempt("2001:db8::2".parse().unwrap(), now) > Duration::ZERO);
+        assert_eq!(
+            throttle.reserve_attempt("2001:db8:0:1::1".parse().unwrap(), now),
             Duration::ZERO
         );
     }

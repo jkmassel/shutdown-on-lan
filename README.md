@@ -109,7 +109,7 @@ The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the con
 
 #### Detecting State
 
-This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once, and up to 4 from any one client address – further connections are closed immediately. Idle connections are probed with TCP keepalives, so a connection whose client went away without closing it (for instance, because it lost power) is closed after about 90 seconds rather than holding its slot forever.
+This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once, and up to 4 from any one client address – further connections are closed immediately. IPv6 clients are counted by their /64 network rather than their exact address (the same goes for delaying wrong secrets), because a single machine can use any number of addresses in its /64. Idle connections are probed with TCP keepalives, so a connection whose client went away without closing it (for instance, because it lost power) is closed after about 90 seconds rather than holding its slot forever.
 
 ### Debugging Issues
 
