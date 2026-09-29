@@ -856,6 +856,21 @@ mod tests {
     }
 
     #[test]
+    fn test_secret_with_inner_whitespace_matches() {
+        let secret = "inner space\rand return";
+        let input = format!("{secret}\r\n");
+        assert!(
+            wait_for_secret(
+                Cursor::new(input.into_bytes()),
+                secret,
+                &unthrottled(),
+                source()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn test_wrong_secret_does_not_match() {
         assert!(!wait_for(b"Super Secret Strin").unwrap());
         assert!(!wait_for(b"Super Secret String!").unwrap());

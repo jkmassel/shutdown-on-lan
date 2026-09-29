@@ -199,6 +199,11 @@ fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
         return Err(ConfigurationError::InvalidSecret);
     }
 
+    // What's received is split into lines, and each one trimmed, before it's compared with the secret
+    if secret.trim() != secret || secret.contains('\n') {
+        return Err(ConfigurationError::UnmatchableSecret);
+    }
+
     Ok(())
 }
 
@@ -1326,6 +1331,11 @@ pub enum ConfigurationError {
     #[error("The secret must be between 1 and {} bytes long", MAX_SECRET_LENGTH)]
     InvalidSecret,
 
+    #[error(
+        "The secret can't start or end with whitespace, or contain a line break – what's received is split into lines and trimmed before it's compared with the secret, so it would never match"
+    )]
+    UnmatchableSecret,
+
     #[error("The port must be between 1 and 65535")]
     InvalidPort,
 
@@ -1566,6 +1576,30 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.len(), 32);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_secrets_that_could_never_match_are_rejected() {
+        let mut configuration = AppConfiguration::default();
+
+        for secret in [" leading", "trailing ", "trailing\r", "two\nlines", "\ttab"] {
+            assert!(
+                matches!(
+                    configuration.set_secret(secret.to_string()),
+                    Err(ConfigurationError::UnmatchableSecret)
+                ),
+                "{secret:?}"
+            );
+        }
+
+        // Only the ends are trimmed
+        configuration
+            .set_secret("inner space\rand return".to_string())
+            .unwrap();
+
+        // For instance, written by hand
+        configuration.secret = "secret ".to_string();
+        assert!(configuration.validate().is_err());
     }
 
     #[test]

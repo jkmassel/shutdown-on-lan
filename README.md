@@ -26,7 +26,7 @@ Customizing the port field allows you to specify which port the service will lis
 ##### Secret
 The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine!
 
-_The secret cannot be empty or longer than 4096 bytes._
+_The secret can't be empty or longer than 4096 bytes, and can't start or end with whitespace or contain a line break._
 
 #### Windows
 1. Download the latest version of the application and run the installer.
