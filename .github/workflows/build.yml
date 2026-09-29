@@ -5,29 +5,38 @@ on:
     tags:
       - '*'
 
+# The build jobs run the tests, and with them every dependency's build scripts and proc macros, so they only
+# get read access. Only the `release` job – which runs none of the project's code – can attest the artifacts
+# and publish them, so a compromised dependency can't replace another platform's installer, or attest its
+# replacement.
 permissions:
-  contents: write
-  # Signing and recording build provenance attestations for the release assets
-  id-token: write
-  attestations: write
-  artifact-metadata: write
-
-env:
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  GH_REPO: ${{ github.repository }}
+  contents: read
 
 jobs:
-  setup:
+  # Every artifact takes its version from Cargo.toml, so a tag that doesn't match it would publish installers
+  # labelled with the wrong version – or, for a tag without a version bump, packages that `apt` and `dnf`
+  # consider already installed.
+  version:
     runs-on: ubuntu-latest
     steps:
-      - name: Create Release
-        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check the tag matches the version in Cargo.toml
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$GITHUB_REF_NAME" != "$VERSION" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, but the version in Cargo.toml is $VERSION"
+            exit 1
+          fi
 
   windows:
+    needs: [version]
     runs-on: windows-latest
-    needs: [setup]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Build
@@ -41,19 +50,14 @@ jobs:
         with:
           name: shutdown-on-lan-windows-installer.msi
           path: shutdown-on-lan-windows-installer.msi
-      - name: Attest Build Provenance
-        uses: actions/attest@v4
-        with:
-          subject-path: shutdown-on-lan-windows-installer.msi
-      - name: Attach Artifact to Release
-        shell: bash
-        run: gh release upload "$GITHUB_REF_NAME" shutdown-on-lan-windows-installer.msi
 
   mac:
+    needs: [version]
     runs-on: macos-latest
-    needs: [setup]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Package
@@ -63,15 +67,9 @@ jobs:
         with:
           name: shutdownonlan.pkg
           path: build/mac/shutdownonlan.pkg
-      - name: Attest Build Provenance
-        uses: actions/attest@v4
-        with:
-          subject-path: build/mac/shutdownonlan.pkg
-      - name: Attach Artifact to Release
-        run: gh release upload "$GITHUB_REF_NAME" build/mac/shutdownonlan.pkg
 
   linux:
-    needs: [setup]
+    needs: [version]
     strategy:
       matrix:
         include:
@@ -84,10 +82,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Run tests
         run: cargo test -- --test-threads 1
       - name: Install packaging tools
-        run: cargo install --locked cargo-deb cargo-generate-rpm
+        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.0
       - name: Build packages
         run: build/linux/build-packages.sh ${{ matrix.arch }}
       - name: Upload Artifact
@@ -95,16 +95,28 @@ jobs:
         with:
           name: shutdown-on-lan-linux-${{ matrix.arch }}
           path: build/linux/dist
+
+  release:
+    needs: [windows, mac, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Signing and recording build provenance attestations for the release assets
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
       - name: Attest Build Provenance
         uses: actions/attest@v4
         with:
-          subject-path: |
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm
-      - name: Attach Packages to Release
-        run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.tar.gz \
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.deb \
-            build/linux/dist/shutdown-on-lan-linux-${{ matrix.arch }}.rpm
+          subject-path: dist/*
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes "" dist/*

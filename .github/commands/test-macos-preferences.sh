@@ -71,7 +71,7 @@ cat > "$LEGACY_FILE" <<'PLIST'
 	<integer>54321</integer>
 	<key>addresses</key>
 	<array>
-		<string>127.0.0.1</string>
+		<string>192.0.2.10</string>
 	</array>
 	<key>secret</key>
 	<string>legacy-secret</string>
@@ -80,12 +80,36 @@ cat > "$LEGACY_FILE" <<'PLIST'
 PLIST
 output=$("$BINARY" get --port --ip-addresses --allowed-sources --secret 2>&1)
 expect_output "$output" "Current Port: 54321"
-expect_output "$output" "Listening IP Addresses: 127.0.0.1"
+expect_output "$output" "Listening IP Addresses: 192.0.2.10"
 expect_output "$output" "Allowed Sources: any"
 expect_output "$output" "Secret: legacy-secret"
 [ ! -e "$LEGACY_FILE" ] || fail "$LEGACY_FILE still exists after migrating"
 [ "$(stored port_number)" = "54321" ] || fail "port_number wasn't migrated"
 expect_secret "legacy-secret"
+
+check "The old default address and secret are handled when migrating"
+reset
+mkdir -p "$STORAGE_DIRECTORY"
+cat > "$LEGACY_FILE" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>port_number</key>
+	<integer>54321</integer>
+	<key>addresses</key>
+	<array>
+		<string>127.0.0.1</string>
+	</array>
+	<key>secret</key>
+	<string>Super Secret String</string>
+</dict>
+</plist>
+PLIST
+output=$("$BINARY" init 2>&1)
+expect_output "$output" "Warning: The secret is still the default"
+# 0.3.0 never enforced its default, so connections are still accepted on every interface
+expect_output "$("$BINARY" get --ip-addresses 2>&1)" "Listening IP Addresses: every interface"
 
 check "Settings changed with \`defaults\` are read"
 defaults write "$PREFERENCES" port_number -int 54322

@@ -82,7 +82,17 @@ sudo firewall-cmd --permanent --add-service=shutdown-on-lan && sudo firewall-cmd
 sudo ufw allow shutdown-on-lan
 ```
 
-The profiles use the default port – if you've changed it, change it in `/usr/lib/firewalld/services/shutdown-on-lan.xml` or `/etc/ufw/applications.d/shutdown-on-lan` too.
+The profiles use the default port. If you've changed it, change it in the profiles too:
+
+- **firewalld:** copy the profile to `/etc/firewalld/services/` and change the port in the copy, which takes precedence – upgrading the package replaces the original in `/usr/lib/firewalld/services/`, but never touches `/etc`:
+
+```
+sudo cp /usr/lib/firewalld/services/shutdown-on-lan.xml /etc/firewalld/services/
+# Change the port in /etc/firewalld/services/shutdown-on-lan.xml, then:
+sudo firewall-cmd --reload
+```
+
+- **ufw:** change it in `/etc/ufw/applications.d/shutdown-on-lan`, which upgrades never overwrite.
 
 ##### Other distributions
 The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit and the firewall profiles:
@@ -109,11 +119,11 @@ The secret can be terminated by a newline (`\n` or `\r\n`) or by closing the con
 
 #### Detecting State
 
-This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once, and up to 4 from any one client address – further connections are closed immediately. Idle connections are probed with TCP keepalives, so a connection whose client went away without closing it (for instance, because it lost power) is closed after about 90 seconds rather than holding its slot forever.
+This service can also allow a client to maintain a connection to the socket without sending data in order to determine whether the target machine is powered on. Up to 32 connections can be held open at once, and up to 4 from any one client address – further connections are closed immediately. IPv6 clients are counted by their /64 network rather than their exact address (the same goes for delaying wrong secrets), because a single machine can use any number of addresses in its /64. Idle connections are probed with TCP keepalives, so a connection whose client went away without closing it (for instance, because it lost power) is closed after about 90 seconds rather than holding its slot forever.
 
 ### Debugging Issues
 
-Each service logs to the platform's own log store, including the source IP address of any remote connections. The system handles retention and rotation. Running `shutdown-on-lan` from a terminal logs to the terminal instead.
+Each service logs to the platform's own log store, including the source IP address of any remote connections. Rejected connections (from a client that isn't in the allowed sources, for instance) are logged at most once a minute for each client address, and at most 20 times a minute in total, so that a client can't flood the log – the next message about a client says how many were left out. The system handles retention and rotation. Running `shutdown-on-lan` from a terminal logs to the terminal instead.
 
 #### Mac
 The service logs to unified logging under the `com.jkmassel.shutdownonlan` subsystem, so it appears in Console.app. To see the last day's log, run:

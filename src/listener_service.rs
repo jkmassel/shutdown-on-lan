@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::configuration::{
-    AppConfiguration, MAX_SECRET_LENGTH, describe_addresses, format_addresses,
+    AppConfiguration, LEGACY_DEFAULT_SECRET_WARNING, MAX_SECRET_LENGTH, describe_addresses,
+    format_addresses,
 };
 
 /// Clients may hold a connection open indefinitely to detect whether the machine is on, so cap how many
@@ -32,6 +33,11 @@ const MAX_ATTEMPT_DELAY: Duration = Duration::from_secs(5);
 /// A source that hasn't made an attempt for this long starts over with no delay.
 const FORGET_SOURCE_AFTER: Duration = Duration::from_secs(5 * 60);
 
+/// Rejected connections are logged at most once per source in each interval, and at most
+/// `MAX_REJECTIONS_LOGGED` times in each interval overall – see `RejectionLog`.
+const REJECTION_LOG_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_REJECTIONS_LOGGED: usize = 20;
+
 /// When accepting connections fails – usually because the system is out of file descriptors or memory –
 /// wait this long before trying again, doubling up to `MAX_ACCEPT_RETRY_DELAY`. If accepting keeps
 /// failing for `GIVE_UP_ACCEPTING_AFTER`, the listener is assumed to be broken, and the service stops so
@@ -43,9 +49,16 @@ const GIVE_UP_ACCEPTING_AFTER: Duration = Duration::from_secs(60);
 /// Listens for connections until something goes wrong that the service can't recover from – it never
 /// returns `Ok`.
 pub fn run(configuration: AppConfiguration) -> io::Result<()> {
-    configuration
-        .validate()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    configuration.validate().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{error} – fix it with `shutdown-on-lan set`"),
+        )
+    })?;
+
+    if configuration.uses_legacy_default_secret() {
+        log::warn!("{LEGACY_DEFAULT_SECRET_WARNING}");
+    }
 
     let listeners = bind(configuration.port_number)?;
     log::info!(
@@ -60,6 +73,11 @@ pub fn run(configuration: AppConfiguration) -> io::Result<()> {
         MAX_OPEN_CONNECTIONS_PER_SOURCE,
     ));
     let throttle = Arc::new(Throttle::new(INITIAL_ATTEMPT_DELAY, MAX_ATTEMPT_DELAY));
+    let rejections = Arc::new(RejectionLog::new(
+        REJECTION_LOG_INTERVAL,
+        MAX_REJECTIONS_LOGGED,
+        Instant::now(),
+    ));
 
     // Stop as soon as either listener does, rather than carrying on with only IPv4 or only IPv6
     let (stopped_tx, stopped) = mpsc::channel();
@@ -68,6 +86,7 @@ pub fn run(configuration: AppConfiguration) -> io::Result<()> {
         let configuration = Arc::clone(&configuration);
         let slots = Arc::clone(&slots);
         let throttle = Arc::clone(&throttle);
+        let rejections = Arc::clone(&rejections);
         let stopped_tx = stopped_tx.clone();
 
         thread::Builder::new()
@@ -75,7 +94,7 @@ pub fn run(configuration: AppConfiguration) -> io::Result<()> {
             .spawn(move || {
                 // The panic hook has already logged the details
                 let error = panic::catch_unwind(AssertUnwindSafe(|| {
-                    accept_connections(&listener, &configuration, &slots, &throttle)
+                    accept_connections(&listener, &configuration, &slots, &throttle, &rejections)
                 }))
                 .unwrap_or_else(|_| io::Error::other("the listener panicked"));
 
@@ -95,6 +114,7 @@ fn accept_connections(
     configuration: &Arc<AppConfiguration>,
     slots: &Arc<ConnectionSlots>,
     throttle: &Arc<Throttle>,
+    rejections: &RejectionLog,
 ) -> io::Error {
     let mut retry = AcceptRetry::new(
         INITIAL_ACCEPT_RETRY_DELAY,
@@ -146,35 +166,34 @@ fn accept_connections(
         let peer = peer_address.to_string();
 
         if !configuration.accepts_connections_on(&interface_ip) {
-            log::info!(
-                peer_addr:% = peer_address.ip();
-                "Rejected connection from {} on {:?} – the configuration only allows connections on {}",
-                peer,
-                interface_ip,
-                format_addresses(&configuration.addresses)
-            );
+            rejections.log(log::Level::Info, peer_address, || {
+                format!(
+                    "Rejected connection from {} on {} – the configuration only allows connections on {}",
+                    peer,
+                    interface_ip,
+                    format_addresses(&configuration.addresses)
+                )
+            });
             continue;
         }
 
         if !configuration.accepts_connections_from(&peer_address.ip()) {
-            log::info!(
-                peer_addr:% = peer_address.ip();
-                "Rejected connection from {} – the configuration only allows connections from {}",
-                peer,
-                format_addresses(&configuration.allowed_sources)
-            );
+            rejections.log(log::Level::Info, peer_address, || {
+                format!(
+                    "Rejected connection from {} – the configuration only allows connections from {}",
+                    peer,
+                    format_addresses(&configuration.allowed_sources)
+                )
+            });
             continue;
         }
 
         let slot = match ConnectionSlots::acquire(slots, peer_address.ip()) {
             Ok(slot) => slot,
             Err(error) => {
-                log::warn!(
-                    peer_addr:% = peer_address.ip();
-                    "Rejected connection from {} – {}",
-                    peer,
-                    error
-                );
+                rejections.log(log::Level::Warn, peer_address, || {
+                    format!("Rejected connection from {} – {}", peer, error)
+                });
                 continue;
             }
         };
@@ -354,7 +373,17 @@ fn enable_keepalive(stream: &TcpStream) -> io::Result<()> {
     )
 }
 
-/// Counts open connections, in total and by source address.
+/// What connection limits and wrong-secret throttling are tracked by: the address for IPv4, and the /64
+/// network for IPv6. A host can use any number of addresses in its /64 – with privacy extensions it does so
+/// routinely – so tracking each IPv6 address separately would let one host get around both.
+fn source_of(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(ip) => IpAddr::V6(Ipv6Addr::from_bits(ip.to_bits() & !(u64::MAX as u128))),
+        ip => ip,
+    }
+}
+
+/// Counts open connections, in total and by source – see `source_of`.
 struct ConnectionSlots {
     limit: usize,
     per_source_limit: usize,
@@ -388,8 +417,9 @@ impl ConnectionSlots {
         self.open.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// Takes a slot for a connection from `source`, which is released when the returned value is dropped.
-    fn acquire(slots: &Arc<ConnectionSlots>, source: IpAddr) -> Result<ConnectionSlot, SlotError> {
+    /// Takes a slot for a connection from `peer`, which is released when the returned value is dropped.
+    fn acquire(slots: &Arc<ConnectionSlots>, peer: IpAddr) -> Result<ConnectionSlot, SlotError> {
+        let source = source_of(peer);
         let mut open = slots.lock();
 
         if open.by_source.get(&source).copied().unwrap_or(0) >= slots.per_source_limit {
@@ -426,6 +456,120 @@ impl Drop for ConnectionSlot {
                 open.by_source.remove(&self.source);
             }
         }
+    }
+}
+
+/// Limits how often rejected connections are logged. A client that isn't allowed to connect can still open
+/// connections as fast as it likes, and logging every one would flood the system log – journald drops
+/// messages past its rate limit, which could include the `Shutting down` audit line, and on Windows the
+/// Application log is shared with everything else.
+///
+/// Each source (see `source_of`) is logged at most once per interval, and at most `limit` times in each
+/// interval overall. The next message logged for a source says how many were left out in between.
+struct RejectionLog {
+    interval: Duration,
+    limit: usize,
+    state: Mutex<RejectionLogState>,
+}
+
+struct RejectionLogState {
+    interval_start: Instant,
+    logged_this_interval: usize,
+    sources: HashMap<IpAddr, LoggedSource>,
+}
+
+struct LoggedSource {
+    /// `None` if it's only been left out because of the overall limit
+    last_logged: Option<Instant>,
+    left_out: u64,
+}
+
+/// Bounds the memory used to track sources. Beyond it, sources are only limited by the overall limit.
+const MAX_SOURCES_TRACKED_FOR_LOGGING: usize = 1024;
+
+impl RejectionLog {
+    fn new(interval: Duration, limit: usize, now: Instant) -> RejectionLog {
+        RejectionLog {
+            interval,
+            limit,
+            state: Mutex::new(RejectionLogState {
+                interval_start: now,
+                logged_this_interval: 0,
+                sources: HashMap::new(),
+            }),
+        }
+    }
+
+    /// Logs the message from `message` about a connection from `peer`, unless too many have been already.
+    fn log(&self, level: log::Level, peer: SocketAddr, message: impl FnOnce() -> String) {
+        if let Some(left_out) = self.should_log(peer.ip(), Instant::now()) {
+            let also = match left_out {
+                0 => String::new(),
+                1 => " (1 more rejection from this source wasn't logged)".to_string(),
+                n => format!(" ({n} more rejections from this source weren't logged)"),
+            };
+            log::log!(level, peer_addr:% = peer.ip(); "{}{}", message(), also);
+        }
+    }
+
+    /// Whether to log a rejected connection from `peer` – if so, with how many from its source were left
+    /// out since the last one that was logged.
+    fn should_log(&self, peer: IpAddr, now: Instant) -> Option<u64> {
+        let source = source_of(peer);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+
+        if now.duration_since(state.interval_start) >= self.interval {
+            state.interval_start = now;
+            state.logged_this_interval = 0;
+            // Keep the sources that were logged recently, or have rejections left out to report
+            let interval = self.interval;
+            state.sources.retain(|_, logged| {
+                logged.left_out > 0
+                    || logged
+                        .last_logged
+                        .is_some_and(|last| now.duration_since(last) < interval)
+            });
+        }
+
+        let due = state
+            .sources
+            .get(&source)
+            .and_then(|logged| logged.last_logged)
+            .is_none_or(|last| now.duration_since(last) >= self.interval);
+        if due && state.logged_this_interval < self.limit {
+            state.logged_this_interval += 1;
+            let left_out = state
+                .sources
+                .remove(&source)
+                .map_or(0, |logged| logged.left_out);
+
+            if state.sources.len() < MAX_SOURCES_TRACKED_FOR_LOGGING {
+                state.sources.insert(
+                    source,
+                    LoggedSource {
+                        last_logged: Some(now),
+                        left_out: 0,
+                    },
+                );
+            }
+            return Some(left_out);
+        }
+
+        let has_room = state.sources.len() < MAX_SOURCES_TRACKED_FOR_LOGGING;
+        match state.sources.get_mut(&source) {
+            Some(logged) => logged.left_out += 1,
+            None if has_room => {
+                state.sources.insert(
+                    source,
+                    LoggedSource {
+                        last_logged: None,
+                        left_out: 1,
+                    },
+                );
+            }
+            None => {}
+        }
+        None
     }
 }
 
@@ -527,8 +671,8 @@ struct SourceState {
     next_attempt: Instant,
 }
 
-/// Spaces out secret attempts from each source address, with the gap growing exponentially as wrong
-/// guesses accumulate. Tracking by source rather than by connection means opening more connections
+/// Spaces out secret attempts from each source (see `source_of`), with the gap growing exponentially as
+/// wrong guesses accumulate. Tracking by source rather than by connection means opening more connections
 /// doesn't buy more guesses.
 struct Throttle {
     initial_delay: Duration,
@@ -546,7 +690,8 @@ impl Throttle {
     }
 
     /// Reserves the next attempt slot for `source`, returning how long to wait before using it.
-    fn reserve_attempt(&self, source: IpAddr, now: Instant) -> Duration {
+    fn reserve_attempt(&self, peer: IpAddr, now: Instant) -> Duration {
+        let source = source_of(peer);
         let mut sources = self
             .sources
             .lock()
@@ -565,7 +710,8 @@ impl Throttle {
         start - now
     }
 
-    fn record_failure(&self, source: IpAddr) {
+    fn record_failure(&self, peer: IpAddr) {
+        let source = source_of(peer);
         let mut sources = self
             .sources
             .lock()
@@ -798,6 +944,35 @@ mod tests {
     }
 
     #[test]
+    fn test_ipv6_sources_are_grouped_by_64_bit_prefix() {
+        assert_eq!(
+            source_of("2001:db8:1:2:aaaa::1".parse().unwrap()),
+            "2001:db8:1:2::".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            source_of("::ffff:10.0.1.50".parse().unwrap()),
+            "10.0.1.50".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(source_of(source()), source());
+    }
+
+    #[test]
+    fn test_changing_ipv6_address_does_not_get_around_the_connection_cap() {
+        let slots = slots();
+
+        let _held = [
+            ConnectionSlots::acquire(&slots, "2001:db8::1".parse().unwrap()).unwrap(),
+            ConnectionSlots::acquire(&slots, "2001:db8::2".parse().unwrap()).unwrap(),
+        ];
+
+        assert_eq!(
+            ConnectionSlots::acquire(&slots, "2001:db8::3".parse().unwrap()).err(),
+            Some(SlotError::TooManyConnectionsFromSource)
+        );
+        assert!(ConnectionSlots::acquire(&slots, "2001:db8:0:1::1".parse().unwrap()).is_ok());
+    }
+
+    #[test]
     fn test_released_slots_are_forgotten() {
         let slots = slots();
         drop(ConnectionSlots::acquire(&slots, source()).unwrap());
@@ -931,6 +1106,51 @@ mod tests {
     }
 
     #[test]
+    fn test_rejections_are_logged_once_per_source_per_interval() {
+        let start = Instant::now();
+        let log = RejectionLog::new(Duration::from_secs(60), 20, start);
+        let later = |seconds| start + Duration::from_secs(seconds);
+
+        assert_eq!(log.should_log(source(), start), Some(0));
+        assert_eq!(log.should_log(source(), later(1)), None);
+        assert_eq!(log.should_log(source(), later(59)), None);
+
+        // Other sources are logged independently – including other /64s, but not other addresses in one
+        assert_eq!(
+            log.should_log("10.0.1.51".parse().unwrap(), later(1)),
+            Some(0)
+        );
+        assert_eq!(
+            log.should_log("2001:db8::1".parse().unwrap(), later(1)),
+            Some(0)
+        );
+        assert_eq!(
+            log.should_log("2001:db8::2".parse().unwrap(), later(1)),
+            None
+        );
+
+        // Once the interval has passed, the next one says how many were left out
+        assert_eq!(log.should_log(source(), later(60)), Some(2));
+        assert_eq!(log.should_log(source(), later(61)), None);
+    }
+
+    #[test]
+    fn test_rejections_are_limited_overall() {
+        let start = Instant::now();
+        let log = RejectionLog::new(Duration::from_secs(60), 2, start);
+        let source = |n: u8| IpAddr::V4(Ipv4Addr::new(10, 0, 1, n));
+
+        assert_eq!(log.should_log(source(1), start), Some(0));
+        assert_eq!(log.should_log(source(2), start), Some(0));
+        assert_eq!(log.should_log(source(3), start), None);
+        assert_eq!(log.should_log(source(3), start), None);
+
+        // The next interval, a source that was left out is logged, with how many were left out
+        let next = start + Duration::from_secs(60);
+        assert_eq!(log.should_log(source(3), next), Some(2));
+    }
+
+    #[test]
     fn test_first_attempt_is_not_delayed() {
         let now = Instant::now();
         assert_eq!(throttle().reserve_attempt(source(), now), Duration::ZERO);
@@ -977,6 +1197,20 @@ mod tests {
 
         assert_eq!(
             throttle.reserve_attempt("10.0.1.51".parse().unwrap(), now),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn test_changing_ipv6_address_does_not_get_around_the_throttle() {
+        let throttle = throttle();
+        let now = Instant::now();
+
+        fail(&throttle, "2001:db8::1".parse().unwrap(), now, 20);
+
+        assert!(throttle.reserve_attempt("2001:db8::2".parse().unwrap(), now) > Duration::ZERO);
+        assert_eq!(
+            throttle.reserve_attempt("2001:db8:0:1::1".parse().unwrap(), now),
             Duration::ZERO
         );
     }

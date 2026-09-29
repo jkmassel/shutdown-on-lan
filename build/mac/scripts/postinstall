@@ -1,18 +1,31 @@
 #!/bin/bash
-set -e
+#
+# Deliberately without `set -e`: whatever else fails, the service has to be loaded again at the end, or it
+# stays stopped until the package is installed again. A failure is still reported to the installer.
 
-## Stop the process (if needed) – this fails on first install, when it isn't loaded yet
-launchctl unload -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist || true
+LABEL=com.jkmassel.shutdownonlan
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+status=0
+
+## Stop the service (if needed), so it starts again with the new version – this fails on first install,
+## when it isn't loaded yet. Not `unload -w`, which marks the service disabled, so that `load -w` would
+## then have to enable it again – whether or not an admin had disabled it.
+launchctl unload "$PLIST" 2>/dev/null
 
 ## Create the configuration with a random secret, unless it already exists. This also imports the
-## configuration file written by older versions.
-/Library/Services/shutdownonlan init
+## configuration file written by older versions. If it fails, the service still starts, and logs why it
+## can't listen until the configuration is fixed.
+/Library/Services/shutdownonlan init || status=1
 
 ## Put the tool on the PATH, with the same name as on the other platforms
-mkdir -p /usr/local/bin
-ln -sf /Library/Services/shutdownonlan /usr/local/bin/shutdown-on-lan
+mkdir -p /usr/local/bin && ln -sf /Library/Services/shutdownonlan /usr/local/bin/shutdown-on-lan || status=1
 
-## Start the process
-launchctl load -w /Library/LaunchDaemons/com.jkmassel.shutdownonlan.plist
+## Start the service, unless an admin disabled it (with `launchctl disable`, or `launchctl unload -w`)
+if launchctl print-disabled system | grep -Eq "\"$LABEL\" => (true|disabled)"; then
+    echo "The service is disabled, so it wasn't started. To enable and start it, run:"
+    echo "  sudo launchctl enable system/$LABEL && sudo launchctl load $PLIST"
+else
+    launchctl load "$PLIST" || status=1
+fi
 
-exit 0
+exit $status

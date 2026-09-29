@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Install packaging tools
-        run: cargo install --locked cargo-deb cargo-generate-rpm
+        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.0
       - name: Build packages
         run: build/linux/build-packages.sh ${{ matrix.arch }}
       - name: Install the .deb
@@ -90,6 +90,8 @@ jobs:
         run: sudo installer -pkg build/mac/shutdownonlan.pkg -target /
       - name: Test the installed service
         run: sudo build/mac/test-package.sh
+      - name: Test reinstalling
+        run: sudo build/mac/test-reinstall.sh build/mac/shutdownonlan.pkg
       - name: Service and installer logs
         if: failure()
         run: |

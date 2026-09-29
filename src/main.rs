@@ -1,6 +1,10 @@
-use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
+use crate::configuration::{
+    AppConfiguration, ConfigurationUpdate, LEGACY_DEFAULT_SECRET_WARNING, describe_addresses,
+    format_addresses,
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::net::IpAddr;
 use std::process;
 
 mod configuration;
@@ -42,7 +46,7 @@ enum Command {
     /// Change the configuration
     Set {
         /// The port to listen on
-        #[arg(long = "port")]
+        #[arg(long = "port", value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
 
         /// A comma-separated list of local interface IP addresses to accept connections on. Pass an empty string to accept connections on every interface.
@@ -100,40 +104,45 @@ fn main() -> Result<()> {
                 process::exit(exitcode::USAGE);
             }
 
-            let mut config = get_app_configuration()?;
+            // Only the values being changed are read and written, so this can fix an invalid one
+            let mut update = ConfigurationUpdate::default();
 
             if let Some(port) = port {
+                update.set_port(port)?;
                 println!("Set port {port:?}");
-                config.port_number = port;
             }
 
             if let Some(ip_address) = ip_address {
-                config
+                update
                     .set_addresses(&ip_address)
                     .with_context(|| format!("Invalid IP address list: {ip_address:?}"))?;
                 println!(
                     "Set IP Addresses: {}",
-                    describe_addresses(&config.addresses)
+                    describe_addresses(update.addresses.as_deref().unwrap_or_default())
                 );
             }
 
             if let Some(secret) = secret {
-                config.set_secret(secret)?;
+                update.set_secret(secret)?;
                 println!("Secret updated");
             }
 
             if let Some(allowed_sources) = allowed_sources {
-                config
+                update
                     .set_allowed_sources(&allowed_sources)
                     .with_context(|| format!("Invalid IP address list: {allowed_sources:?}"))?;
-                println!("Set Allowed Sources: {}", describe_sources(&config));
+                println!(
+                    "Set Allowed Sources: {}",
+                    describe_sources(update.allowed_sources.as_deref().unwrap_or_default())
+                );
             }
 
             log::debug!("Saving Configuration");
 
-            config.save()?;
+            update.apply().context("Unable to save the configuration")?;
 
             println!("Configuration Changes Saved.");
+            check_configuration();
 
             // The service only reads its configuration at startup
             println!("Restart the service to apply them: {RESTART_COMMAND}");
@@ -158,7 +167,10 @@ fn main() -> Result<()> {
             }
 
             if allowed_sources {
-                println!("Allowed Sources: {}", describe_sources(&config));
+                println!(
+                    "Allowed Sources: {}",
+                    describe_sources(&config.allowed_sources)
+                );
             }
 
             if secret {
@@ -166,8 +178,9 @@ fn main() -> Result<()> {
             }
         }
         Some(Command::Init {}) => {
-            get_app_configuration()?;
+            let config = get_app_configuration()?;
             println!("Configuration ready. To see the secret, run `shutdown-on-lan get --secret`.");
+            warn_about_legacy_default_secret(&config);
         }
         Some(Command::Run {}) => {
             println!("Running in standalone mode");
@@ -187,11 +200,30 @@ const RESTART_COMMAND: &str = "sudo launchctl kickstart -k system/com.jkmassel.s
 #[cfg(windows)]
 const RESTART_COMMAND: &str = "Restart-Service ShutdownOnLan (from an Administrative PowerShell)";
 
-fn describe_sources(config: &AppConfiguration) -> String {
-    if config.allowed_sources.is_empty() {
+/// Reports anything that would stop the service from starting, or that should be changed – other values
+/// than the ones just set could be invalid.
+fn check_configuration() {
+    match get_app_configuration().and_then(|config| {
+        config.validate()?;
+        Ok(config)
+    }) {
+        Ok(config) => warn_about_legacy_default_secret(&config),
+        Err(error) => eprintln!("Warning: the service won't start until this is fixed – {error:#}"),
+    }
+}
+
+/// The installers run `init`, so this also shows up in their output.
+fn warn_about_legacy_default_secret(config: &AppConfiguration) {
+    if config.uses_legacy_default_secret() {
+        eprintln!("Warning: {LEGACY_DEFAULT_SECRET_WARNING}");
+    }
+}
+
+fn describe_sources(allowed_sources: &[IpAddr]) -> String {
+    if allowed_sources.is_empty() {
         "any".to_string()
     } else {
-        format_addresses(&config.allowed_sources)
+        format_addresses(allowed_sources)
     }
 }
 
