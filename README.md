@@ -113,7 +113,7 @@ This service can also allow a client to maintain a connection to the socket with
 
 ### Debugging Issues
 
-Each service logs to the platform's own log store, including the source IP address of any remote connections. The system handles retention and rotation. Running `shutdown-on-lan` from a terminal logs to the terminal instead.
+Each service logs to the platform's own log store, including the source IP address of any remote connections. Rejected connections (from a client that isn't in the allowed sources, for instance) are logged at most once a minute for each client address, and at most 20 times a minute in total, so that a client can't flood the log – the next message about a client says how many were left out. The system handles retention and rotation. Running `shutdown-on-lan` from a terminal logs to the terminal instead.
 
 #### Mac
 The service logs to unified logging under the `com.jkmassel.shutdownonlan` subsystem, so it appears in Console.app. To see the last day's log, run:
