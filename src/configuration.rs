@@ -66,15 +66,19 @@ impl AppConfiguration {
     }
 
     /// Sets the allowed client addresses from a comma-separated list. An empty string allows any client.
-    pub fn set_allowed_sources(&mut self, string: &str) -> Result<(), AddrParseError> {
-        self.allowed_sources = parse_optional_addresses(string)?;
+    pub fn set_allowed_sources(&mut self, string: &str) -> Result<(), ConfigurationError> {
+        let allowed_sources = parse_optional_addresses(string)?;
+        validate_allowed_sources(&allowed_sources)?;
+        self.allowed_sources = allowed_sources;
         Ok(())
     }
 
-    /// Checks the values that can't be checked while parsing – a secret written by hand (or managed by a
-    /// configuration profile) could be empty, which would never match.
+    /// Checks the values that can't be checked while parsing, because they could have been written by hand
+    /// (or managed by a configuration profile) – for instance, an empty secret, which would never match.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
-        validate_secret(&self.secret)
+        validate_port(self.port_number)?;
+        validate_secret(&self.secret)?;
+        validate_allowed_sources(&self.allowed_sources)
     }
 
     pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
@@ -108,7 +112,11 @@ impl AppConfiguration {
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
     pub fn accepts_connections_on(&self, ip: &IpAddr) -> bool {
-        self.addresses.is_empty() || contains_address(&self.addresses, ip)
+        self.addresses.is_empty()
+            || self
+                .addresses
+                .iter()
+                .any(|address| interface_matches(address, ip))
     }
 
     /// Whether a client at `ip` is allowed to connect.
@@ -117,11 +125,40 @@ impl AppConfiguration {
     }
 }
 
+/// Whether a connection received on the interface `ip` matches the configured `address`. As when binding a
+/// socket, `0.0.0.0` means every IPv4 interface and `::` every interface. Versions before 0.4.0 accepted
+/// them too, and accepted connections on every interface whatever the configuration said.
+fn interface_matches(address: &IpAddr, ip: &IpAddr) -> bool {
+    match address.to_canonical() {
+        IpAddr::V4(address) if address.is_unspecified() => ip.to_canonical().is_ipv4(),
+        IpAddr::V6(address) if address.is_unspecified() => true,
+        address => address == ip.to_canonical(),
+    }
+}
+
 /// Treats an IPv4 address and the IPv4-mapped IPv6 form of it (`::ffff:10.0.1.50`) as the same address.
 fn contains_address(addresses: &[IpAddr], ip: &IpAddr) -> bool {
     addresses
         .iter()
         .any(|address| address.to_canonical() == ip.to_canonical())
+}
+
+/// Port 0 would listen on a different, random port every time the service starts.
+fn validate_port(port: u16) -> Result<(), ConfigurationError> {
+    if port == 0 {
+        return Err(ConfigurationError::InvalidPort);
+    }
+
+    Ok(())
+}
+
+/// `0.0.0.0` and `::` aren't addresses a client can connect from, so they'd never match – leaving the list
+/// empty is how to allow any client.
+fn validate_allowed_sources(addresses: &[IpAddr]) -> Result<(), ConfigurationError> {
+    match addresses.iter().find(|address| address.is_unspecified()) {
+        Some(address) => Err(ConfigurationError::UnspecifiedSource(*address)),
+        None => Ok(()),
+    }
 }
 
 fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
@@ -1157,6 +1194,17 @@ pub enum ConfigurationError {
     #[error("The secret must be between 1 and {} bytes long", MAX_SECRET_LENGTH)]
     InvalidSecret,
 
+    #[error("The port must be between 1 and 65535")]
+    InvalidPort,
+
+    #[error(transparent)]
+    InvalidAddress(#[from] AddrParseError),
+
+    #[error(
+        "{0} isn't a client address, so it would never match – to allow any client, leave the allowed sources empty"
+    )]
+    UnspecifiedSource(IpAddr),
+
     #[cfg(windows)]
     #[error("Unable to open the configuration registry key")]
     RegistryUnavailable(#[source] std::io::Error),
@@ -1256,6 +1304,51 @@ mod tests {
         assert!(configuration.accepts_connections_on(&"::ffff:10.0.1.100".parse().unwrap()));
         assert!(configuration.accepts_connections_from(&"10.0.1.50".parse().unwrap()));
         assert!(!configuration.accepts_connections_from(&"::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_unspecified_addresses_accept_connections_on_every_interface() {
+        let mut configuration = AppConfiguration::default();
+
+        configuration.set_addresses("0.0.0.0").unwrap();
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_on(&"::ffff:10.0.1.100".parse().unwrap()));
+        assert!(!configuration.accepts_connections_on(&"fe80::1".parse().unwrap()));
+
+        configuration.set_addresses("::").unwrap();
+        assert!(configuration.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+        assert!(configuration.accepts_connections_on(&"fe80::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_unspecified_addresses_are_not_allowed_sources() {
+        let mut configuration = AppConfiguration::default();
+
+        for sources in ["0.0.0.0", "10.0.1.50, ::"] {
+            assert!(matches!(
+                configuration.set_allowed_sources(sources),
+                Err(ConfigurationError::UnspecifiedSource(_))
+            ));
+        }
+        assert!(configuration.allowed_sources.is_empty());
+
+        // For instance, written by hand
+        configuration.allowed_sources = vec!["0.0.0.0".parse().unwrap()];
+        assert!(configuration.validate().is_err());
+    }
+
+    #[test]
+    fn test_port_zero_is_invalid() {
+        let configuration = AppConfiguration {
+            port_number: 0,
+            ..AppConfiguration::default()
+        };
+
+        assert!(matches!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidPort)
+        ));
+        assert!(AppConfiguration::default().validate().is_ok());
     }
 
     #[test]

@@ -44,7 +44,7 @@ enum Command {
     /// Change the configuration
     Set {
         /// The port to listen on
-        #[arg(long = "port")]
+        #[arg(long = "port", value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
 
         /// A comma-separated list of local interface IP addresses to accept connections on. Pass an empty string to accept connections on every interface.
