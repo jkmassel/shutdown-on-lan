@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::configuration::{
-    AppConfiguration, MAX_SECRET_LENGTH, describe_addresses, format_addresses,
+    AppConfiguration, LEGACY_DEFAULT_SECRET_WARNING, MAX_SECRET_LENGTH, describe_addresses,
+    format_addresses,
 };
 
 /// Clients may hold a connection open indefinitely to detect whether the machine is on, so cap how many
@@ -46,6 +47,10 @@ pub fn run(configuration: AppConfiguration) -> io::Result<()> {
     configuration
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+
+    if configuration.uses_legacy_default_secret() {
+        log::warn!("{LEGACY_DEFAULT_SECRET_WARNING}");
+    }
 
     let listeners = bind(configuration.port_number)?;
     log::info!(

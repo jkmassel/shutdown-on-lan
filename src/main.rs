@@ -1,4 +1,6 @@
-use crate::configuration::{AppConfiguration, describe_addresses, format_addresses};
+use crate::configuration::{
+    AppConfiguration, LEGACY_DEFAULT_SECRET_WARNING, describe_addresses, format_addresses,
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::process;
@@ -134,6 +136,7 @@ fn main() -> Result<()> {
             config.save()?;
 
             println!("Configuration Changes Saved.");
+            warn_about_legacy_default_secret(&config);
 
             // The service only reads its configuration at startup
             println!("Restart the service to apply them: {RESTART_COMMAND}");
@@ -166,8 +169,9 @@ fn main() -> Result<()> {
             }
         }
         Some(Command::Init {}) => {
-            get_app_configuration()?;
+            let config = get_app_configuration()?;
             println!("Configuration ready. To see the secret, run `shutdown-on-lan get --secret`.");
+            warn_about_legacy_default_secret(&config);
         }
         Some(Command::Run {}) => {
             println!("Running in standalone mode");
@@ -186,6 +190,13 @@ const RESTART_COMMAND: &str = "sudo launchctl kickstart -k system/com.jkmassel.s
 
 #[cfg(windows)]
 const RESTART_COMMAND: &str = "Restart-Service ShutdownOnLan (from an Administrative PowerShell)";
+
+/// The installers run `init`, so this also shows up in their output.
+fn warn_about_legacy_default_secret(config: &AppConfiguration) {
+    if config.uses_legacy_default_secret() {
+        eprintln!("Warning: {LEGACY_DEFAULT_SECRET_WARNING}");
+    }
+}
 
 fn describe_sources(config: &AppConfiguration) -> String {
     if config.allowed_sources.is_empty() {

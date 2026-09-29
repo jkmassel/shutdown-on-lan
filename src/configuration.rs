@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "linux"))]
+use std::net::Ipv4Addr;
 use std::net::{AddrParseError, IpAddr};
 #[cfg(not(windows))]
 use std::path::Path;
@@ -26,6 +28,16 @@ use std::convert::TryFrom;
 
 /// The longest secret we'll accept, in bytes.
 pub const MAX_SECRET_LENGTH: usize = 4096;
+
+/// The secret every installation shared before 0.4.0. It was published in the README, so anyone on the
+/// network could use it to shut down a machine that still has it.
+const LEGACY_DEFAULT_SECRET: &str = "Super Secret String";
+
+pub const LEGACY_DEFAULT_SECRET_WARNING: &str = "The secret is still the default from versions before 0.4.0, which was published – anyone on the network can use it to shut this machine down. Change it with `shutdown-on-lan set --secret`, then update your control system.";
+
+/// The interface address every installation defaulted to before 0.4.0 – see `forget_legacy_default_addresses`.
+#[cfg(not(target_os = "linux"))]
+const LEGACY_DEFAULT_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfiguration {
@@ -69,6 +81,29 @@ impl AppConfiguration {
         validate_secret(&secret)?;
         self.secret = secret;
         Ok(())
+    }
+
+    /// Whether the secret is the one every installation shared before 0.4.0. It's kept on upgrade, because
+    /// replacing it would break every control system that uses it, but it should be changed.
+    pub fn uses_legacy_default_secret(&self) -> bool {
+        self.secret == LEGACY_DEFAULT_SECRET
+    }
+
+    /// Versions before 0.4.0 defaulted `addresses` to `127.0.0.1`, but never enforced it – they accepted
+    /// connections on every interface. Enforcing it now would drop every connection from the network, so a
+    /// configuration upgraded from one of them that still has the old default keeps accepting connections
+    /// on every interface.
+    ///
+    /// On Linux, the configuration moved to a different file in 0.4.0, and the old one isn't imported.
+    #[cfg(not(target_os = "linux"))]
+    fn forget_legacy_default_addresses(&mut self) {
+        if self.addresses == [LEGACY_DEFAULT_ADDRESS] {
+            log::info!(
+                "Accepting connections on every interface rather than only {}, which was the default before 0.4.0 but was never enforced",
+                LEGACY_DEFAULT_ADDRESS
+            );
+            self.addresses.clear();
+        }
     }
 
     /// Whether a connection received on the local interface `ip` is allowed to shut down the machine.
@@ -257,8 +292,9 @@ impl AppConfiguration {
             .and_then(|value| value.downcast_into::<CFString>())
             .ok_or(ConfigurationError::CorruptConfigurationFile)?
             .to_string();
-        let legacy = Self::from_property_lists(get, secret)
+        let mut legacy = Self::from_property_lists(get, secret)
             .map_err(|_key| ConfigurationError::CorruptConfigurationFile)?;
+        legacy.forget_legacy_default_addresses();
 
         // Values managed by a configuration profile take precedence over the legacy file
         for (key, value) in legacy.to_property_lists() {
@@ -508,6 +544,22 @@ impl AppConfiguration {
         Ok(())
     }
 
+    /// Like `forget_legacy_default_addresses`, for the value stored in the registry.
+    fn forget_legacy_default_addresses_in(registry: &Registry) -> Result<(), ConfigurationError> {
+        let stored = registry.read_string(ConfigurationRegistryKeys::IpAddress)?;
+        let mut configuration = AppConfiguration {
+            addresses: parse_optional_addresses(&stored).unwrap_or_default(),
+            ..AppConfiguration::default()
+        };
+        configuration.forget_legacy_default_addresses();
+
+        if configuration.addresses.is_empty() && !stored.trim().is_empty() {
+            registry.write_string(ConfigurationRegistryKeys::IpAddress, &String::new())?;
+        }
+
+        Ok(())
+    }
+
     /// Writes defaults for any values that are missing from the registry. Existing values are never
     /// overwritten – if one of them exists but can't be read, that's reported as an error instead.
     fn write_missing_defaults(registry: &Registry) -> Result<(), ConfigurationError> {
@@ -531,7 +583,10 @@ impl AppConfiguration {
             registry.write_string(ConfigurationRegistryKeys::Secret, &defaults.secret)?;
         }
 
+        // Only versions before 0.4.0 left `allowed_sources` out, so this is an upgrade from one of them
         if !registry.contains::<String>(ConfigurationRegistryKeys::AllowedSources)? {
+            Self::forget_legacy_default_addresses_in(registry)?;
+
             log::info!("Writing default allowed sources to registry");
             registry.write_string(
                 ConfigurationRegistryKeys::AllowedSources,
@@ -1199,6 +1254,17 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_default_secret_is_detected() {
+        let mut configuration = AppConfiguration::default();
+        assert!(!configuration.uses_legacy_default_secret());
+
+        configuration
+            .set_secret(LEGACY_DEFAULT_SECRET.to_string())
+            .unwrap();
+        assert!(configuration.uses_legacy_default_secret());
+    }
+
+    #[test]
     fn test_debug_output_does_not_include_the_secret() {
         let configuration = AppConfiguration::default();
         let output = format!("{:?}", configuration);
@@ -1507,6 +1573,22 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn test_legacy_default_address_accepts_connections_on_every_interface() {
+        let test = TestStorage::new("migrate-default-address");
+        let path = test.legacy_file(&LEGACY_PLIST_WITHOUT_ALLOWED_SOURCES.replace(
+            "<string>10.0.1.100</string>\n\t\t<string>::1</string>",
+            "<string>127.0.0.1</string>",
+        ));
+
+        AppConfiguration::migrate_legacy_file(&path, &test.storage).unwrap();
+
+        let migrated = AppConfiguration::fetch_from(&test.storage).unwrap();
+        assert!(migrated.addresses.is_empty());
+        assert!(migrated.accepts_connections_on(&"10.0.1.100".parse().unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn test_legacy_file_replaces_existing_values() {
         let test = TestStorage::new("migrate-over-defaults");
         AppConfiguration::write_missing_defaults(&test.storage).unwrap();
@@ -1670,6 +1752,45 @@ mod tests {
         assert_eq!(upgraded.port_number, configuration.port_number);
         assert_eq!(upgraded.addresses, configuration.addresses);
         assert_eq!(upgraded.secret, configuration.secret);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_upgraded_registry_with_the_legacy_default_address_accepts_connections_on_every_interface()
+     {
+        let test = TestRegistry::new("upgrade-default-address");
+
+        // As written by 0.3.0
+        for (key, value) in [
+            (ConfigurationRegistryKeys::IpAddress, "127.0.0.1"),
+            (ConfigurationRegistryKeys::Secret, LEGACY_DEFAULT_SECRET),
+        ] {
+            test.registry.write_string(key, &value.to_string()).unwrap();
+        }
+        test.registry
+            .write_u32(ConfigurationRegistryKeys::Port, 53632)
+            .unwrap();
+
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
+
+        let upgraded = AppConfiguration::fetch_from(&test.registry).unwrap();
+        assert!(upgraded.addresses.is_empty());
+        assert!(upgraded.uses_legacy_default_secret());
+
+        // Once upgraded, a configuration that's deliberately set to 127.0.0.1 is left alone
+        test.registry
+            .write_string(
+                ConfigurationRegistryKeys::IpAddress,
+                &"127.0.0.1".to_string(),
+            )
+            .unwrap();
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry)
+                .unwrap()
+                .addresses,
+            vec![LEGACY_DEFAULT_ADDRESS]
+        );
     }
 
     #[cfg(windows)]
