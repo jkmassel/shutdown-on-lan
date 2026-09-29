@@ -175,15 +175,20 @@ impl AppConfiguration {
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::debug!("Checking whether configuration needs to be created");
-        let storage = Storage::system();
+        Self::prepare(&Storage::system(), Path::new(LEGACY_CONFIGURATION_FILE))
+    }
 
-        let legacy_file = Path::new(LEGACY_CONFIGURATION_FILE);
+    /// Imports anything written by older versions, then fills in any missing values.
+    fn prepare(storage: &Storage, legacy_file: &Path) -> Result<(), ConfigurationError> {
+        // Before anything writes to the preferences domain, which would replace the file
+        storage.check_preferences_file()?;
+
         if legacy_file.exists() {
-            Self::migrate_legacy_file(legacy_file, &storage)?;
+            Self::migrate_legacy_file(legacy_file, storage)?;
         }
 
-        Self::migrate_secret_from_preferences(&storage)?;
-        Self::write_missing_defaults(&storage)
+        Self::migrate_secret_from_preferences(storage)?;
+        Self::write_missing_defaults(storage)
     }
 
     fn fetch_from(storage: &Storage) -> Result<AppConfiguration, ConfigurationError> {
@@ -200,6 +205,7 @@ impl AppConfiguration {
     /// Writes the values that differ from the stored ones. Fails without writing anything if one of them
     /// is managed by a configuration profile, because the change would have no effect.
     fn save_to(&self, storage: &Storage) -> Result<(), ConfigurationError> {
+        storage.check_preferences_file()?;
         let preferences = &storage.preferences;
 
         let changes: Vec<(&'static str, CFPropertyList)> = self
@@ -273,15 +279,8 @@ impl AppConfiguration {
         let preferences = &storage.preferences;
 
         let bytes = std::fs::read(path).map_err(ConfigurationError::MissingConfigurationFile)?;
-        let dictionary = core_foundation::propertylist::create_with_data(
-            CFData::from_buffer(&bytes),
-            core_foundation::propertylist::kCFPropertyListImmutable,
-        )
-        .ok()
-        .and_then(|(plist, _format)| {
-            unsafe { CFPropertyList::wrap_under_create_rule(plist) }.downcast_into::<CFDictionary>()
-        })
-        .ok_or(ConfigurationError::CorruptConfigurationFile)?;
+        let dictionary =
+            parse_dictionary(&bytes).ok_or(ConfigurationError::CorruptConfigurationFile)?;
 
         let get = |key: &str| {
             dictionary
@@ -844,6 +843,18 @@ fn property_list_to_addresses(value: CFPropertyList) -> Option<Vec<IpAddr>> {
         .collect()
 }
 
+/// Parses a property list file whose root is a dictionary.
+#[cfg(target_os = "macos")]
+fn parse_dictionary(bytes: &[u8]) -> Option<CFDictionary> {
+    let (plist, _format) = core_foundation::propertylist::create_with_data(
+        CFData::from_buffer(bytes),
+        core_foundation::propertylist::kCFPropertyListImmutable,
+    )
+    .ok()?;
+
+    unsafe { CFPropertyList::wrap_under_create_rule(plist) }.downcast_into::<CFDictionary>()
+}
+
 #[cfg(target_os = "macos")]
 fn addresses_to_property_list(addresses: &[IpAddr]) -> CFPropertyList {
     let strings: Vec<CFString> = addresses
@@ -861,6 +872,8 @@ fn addresses_to_property_list(addresses: &[IpAddr]) -> CFPropertyList {
 #[cfg(target_os = "macos")]
 struct Storage {
     preferences: Preferences,
+    /// Where `cfprefsd` stores `preferences`
+    preferences_file: PathBuf,
     secret_file: PathBuf,
 }
 
@@ -869,7 +882,30 @@ impl Storage {
     fn system() -> Storage {
         Storage {
             preferences: Preferences::system(),
+            preferences_file: PathBuf::from(PREFERENCES_FILE),
             secret_file: PathBuf::from(SECRET_FILE),
+        }
+    }
+
+    /// Fails if the preferences file exists but can't be parsed. `cfprefsd` treats a file it can't parse as
+    /// empty, so every value would read back as missing. Filling them in with defaults would then replace
+    /// the admin's port, addresses and allowed sources – and the default allowed sources accept any client.
+    /// Any write to the domain would replace the file too, so this is checked before anything is written.
+    fn check_preferences_file(&self) -> Result<(), ConfigurationError> {
+        let corrupt = || ConfigurationError::CorruptPreferencesFile {
+            path: self.preferences_file.display().to_string(),
+        };
+
+        match std::fs::read(&self.preferences_file) {
+            Ok(bytes) => parse_dictionary(&bytes).map(|_| ()).ok_or_else(corrupt),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                Err(ConfigurationError::RequiresRoot)
+            }
+            Err(error) => Err(ConfigurationError::PreferencesNotReadable {
+                source: error,
+                path: self.preferences_file.display().to_string(),
+            }),
         }
     }
 
@@ -1079,6 +1115,19 @@ pub enum ConfigurationError {
     #[cfg(target_os = "macos")]
     #[error("The {0} preference is missing or invalid")]
     PreferenceNotReadable(&'static str),
+
+    #[cfg(target_os = "macos")]
+    #[error(
+        "{path} isn't a valid property list, so the configuration can't be read. Fix or delete it, then try again – deleting it restores the default settings."
+    )]
+    CorruptPreferencesFile { path: String },
+
+    #[cfg(target_os = "macos")]
+    #[error("Unable to read {path}")]
+    PreferencesNotReadable {
+        source: std::io::Error,
+        path: String,
+    },
 
     #[cfg(not(windows))]
     #[error("Only root can read or change the configuration – try again with sudo")]
@@ -1336,6 +1385,7 @@ mod tests {
 
             TestStorage {
                 storage: Storage {
+                    preferences_file: directory.join(format!("{PREFERENCES_DOMAIN}.plist")),
                     preferences: Preferences {
                         application_id: CFString::new(domain.to_str().unwrap()),
                         user: unsafe {
@@ -1462,6 +1512,39 @@ mod tests {
                 port_number: AppConfiguration::default().port_number,
                 ..configuration
             }
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_preferences_are_stored_in_the_expected_file() {
+        let test = TestStorage::new("preferences-file");
+
+        TestStorage::custom_configuration()
+            .save_to(&test.storage)
+            .unwrap();
+
+        assert!(test.storage.preferences_file.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_corrupt_preferences_file_is_not_replaced_with_defaults() {
+        let test = TestStorage::new("corrupt-preferences");
+        std::fs::write(&test.storage.preferences_file, "not a plist").unwrap();
+        let legacy_file = test.directory.join("missing.plist");
+
+        assert!(matches!(
+            AppConfiguration::prepare(&test.storage, &legacy_file),
+            Err(ConfigurationError::CorruptPreferencesFile { .. })
+        ));
+        assert!(matches!(
+            TestStorage::custom_configuration().save_to(&test.storage),
+            Err(ConfigurationError::CorruptPreferencesFile { .. })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&test.storage.preferences_file).unwrap(),
+            "not a plist"
         );
     }
 
