@@ -13,7 +13,25 @@ permissions:
   contents: read
 
 jobs:
+  # Every artifact takes its version from Cargo.toml, so a tag that doesn't match it would publish installers
+  # labelled with the wrong version – or, for a tag without a version bump, packages that `apt` and `dnf`
+  # consider already installed.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check the tag matches the version in Cargo.toml
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$GITHUB_REF_NAME" != "$VERSION" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, but the version in Cargo.toml is $VERSION"
+            exit 1
+          fi
+
   windows:
+    needs: [version]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -34,6 +52,7 @@ jobs:
           path: shutdown-on-lan-windows-installer.msi
 
   mac:
+    needs: [version]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,6 +69,7 @@ jobs:
           path: build/mac/shutdownonlan.pkg
 
   linux:
+    needs: [version]
     strategy:
       matrix:
         include:

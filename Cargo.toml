@@ -1,6 +1,6 @@
 [package]
 name = "shutdown-on-lan"
-version = "0.2.0"
+version = "0.4.0"
 authors = ["Jeremy Massel"]
 license = "MPL-2.0"
 description = "Shuts this machine down when it receives a secret over the network – the opposite of wake-on-LAN"
