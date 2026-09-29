@@ -6,7 +6,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use system_shutdown::shutdown;
 
 use crate::configuration::{
     AppConfiguration, MAX_SECRET_LENGTH, describe_addresses, format_addresses,
@@ -104,10 +103,18 @@ fn accept_connections(
     );
 
     loop {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => {
+        let Connection {
+            stream,
+            peer: peer_address,
+            interface: interface_ip,
+        } = match next_connection(listener) {
+            Ok(Some(connection)) => {
                 retry.succeeded();
-                stream
+                connection
+            }
+            Ok(None) => {
+                retry.succeeded();
+                continue;
             }
             // The client went away before the connection was accepted
             Err(error) if affects_only_this_connection(&error) => {
@@ -136,28 +143,7 @@ fn accept_connections(
             },
         };
 
-        // Compare and log IPv4-mapped IPv6 addresses as IPv4, in case the system hands one over
-        let peer_address = match stream.peer_addr() {
-            Ok(address) => SocketAddr::new(address.ip().to_canonical(), address.port()),
-            Err(error) => {
-                log::warn!("Dropping connection from unknown peer – {}", error);
-                continue;
-            }
-        };
         let peer = peer_address.to_string();
-
-        let interface_ip = match stream.local_addr() {
-            Ok(address) => address.ip().to_canonical(),
-            Err(error) => {
-                log::warn!(
-                    peer_addr:% = peer_address.ip();
-                    "Dropping connection from {} – {}",
-                    peer,
-                    error
-                );
-                continue;
-            }
-        };
 
         if !configuration.accepts_connections_on(&interface_ip) {
             log::info!(
@@ -222,6 +208,46 @@ fn accept_connections(
             );
         }
     }
+}
+
+/// An accepted connection, with the addresses it came from and arrived on.
+struct Connection {
+    stream: TcpStream,
+    peer: SocketAddr,
+    interface: IpAddr,
+}
+
+/// Waits for the next connection. Returns `Ok(None)` for one that's already gone – for instance, because
+/// the client reset it before it was accepted.
+///
+/// This accepts with socket2 rather than `TcpListener::accept`, and reads the addresses with it too. When
+/// a client resets its connection before it's accepted, macOS hands over the connection without an address.
+/// std reports that as an `InvalidInput` error, which looks the same as a broken listener, so enough of
+/// them would stop the service – and if the address is truncated rather than missing, std panics.
+fn next_connection(listener: &TcpListener) -> io::Result<Option<Connection>> {
+    let (socket, _address) = SockRef::from(listener).accept()?;
+
+    let addresses = ip_address_of(socket.peer_addr())
+        .and_then(|peer| Ok((peer, ip_address_of(socket.local_addr())?)));
+
+    match addresses {
+        // Compare and log IPv4-mapped IPv6 addresses as IPv4, in case the system hands one over
+        Ok((peer, local)) => Ok(Some(Connection {
+            stream: socket.into(),
+            peer: SocketAddr::new(peer.ip().to_canonical(), peer.port()),
+            interface: local.ip().to_canonical(),
+        })),
+        Err(error) => {
+            log::debug!("Dropping a connection that closed before it was accepted – {error}");
+            Ok(None)
+        }
+    }
+}
+
+fn ip_address_of(address: io::Result<socket2::SockAddr>) -> io::Result<SocketAddr> {
+    address?
+        .as_socket()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not an IP address"))
 }
 
 /// Errors from `accept` that are about the connection being accepted, rather than the listener.
@@ -408,7 +434,7 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
         Ok(true) => {
             log::info!(peer_addr:% = peer.ip(); "Shutting down - source: {}", peer);
 
-            if let Err(error) = shutdown() {
+            if let Err(error) = shut_down() {
                 log::error!("Failed to shut down: {}", error);
             }
         }
@@ -417,6 +443,39 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
             log::warn!(peer_addr:% = peer.ip(); "Terminating connection with {}: {}", peer, error)
         }
     }
+}
+
+/// Shuts the machine down.
+///
+/// On macOS this runs `shutdown` rather than using `system_shutdown`, which asks System Events to shut down
+/// over AppleScript. The service is a root LaunchDaemon, so there's no GUI session to answer the Automation
+/// permission prompt that needs (at the login window, there's no session at all), and apps can cancel that
+/// kind of shutdown anyway.
+#[cfg(target_os = "macos")]
+fn shut_down() -> io::Result<()> {
+    let output = shutdown_command().output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "`shutdown` exited with {} – {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shutdown_command() -> std::process::Command {
+    let mut command = std::process::Command::new("/sbin/shutdown");
+    command.args(["-h", "now"]);
+    command
+}
+
+#[cfg(not(target_os = "macos"))]
+fn shut_down() -> io::Result<()> {
+    system_shutdown::shutdown()
 }
 
 /// Reads newline-delimited messages until one matches `secret` (returning `true`) or the client closes
@@ -625,6 +684,14 @@ mod tests {
         )));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_shuts_down_without_asking_system_events() {
+        let command = shutdown_command();
+        assert_eq!(command.get_program(), "/sbin/shutdown");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["-h", "now"]);
+    }
+
     #[test]
     fn test_secret_without_a_trailing_newline_matches() {
         assert!(wait_for(b"Super Secret String").unwrap());
@@ -743,10 +810,7 @@ mod tests {
     /// Connects to the listener from `bind` for `host`'s address family, returning the addresses as
     /// `accept_connections` sees them.
     fn connect(listeners: &[TcpListener], host: IpAddr) -> (IpAddr, IpAddr) {
-        let listener = listeners
-            .iter()
-            .find(|listener| listener.local_addr().unwrap().is_ipv6() == host.is_ipv6())
-            .unwrap();
+        let listener = listener_for(listeners, host);
         let port = listener.local_addr().unwrap().port();
         let _client = TcpStream::connect((host, port)).unwrap();
         let (stream, peer) = listener.accept().unwrap();
@@ -771,6 +835,46 @@ mod tests {
         let localhost = IpAddr::V6(Ipv6Addr::LOCALHOST);
 
         assert_eq!(connect(&listeners, localhost), (localhost, localhost));
+    }
+
+    /// The listener from `bind` for `host`'s address family.
+    fn listener_for(listeners: &[TcpListener], host: IpAddr) -> &TcpListener {
+        listeners
+            .iter()
+            .find(|listener| listener.local_addr().unwrap().is_ipv6() == host.is_ipv6())
+            .unwrap()
+    }
+
+    #[test]
+    fn test_connections_reset_before_being_accepted_do_not_stop_the_listener() {
+        let listeners = bind(0).unwrap();
+
+        for host in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            let listener = listener_for(&listeners, host);
+            let address = SocketAddr::new(host, listener.local_addr().unwrap().port());
+
+            // Closing a socket with a zero linger time resets its connection
+            let client = Socket::new(Domain::for_address(address), Type::STREAM, None).unwrap();
+            client.set_linger(Some(Duration::ZERO)).unwrap();
+            client.connect(&address.into()).unwrap();
+            drop(client);
+            thread::sleep(Duration::from_millis(100));
+
+            // macOS hands the connection over without an address, Linux with one, and Windows may report
+            // it as reset – none of which is a problem with the listener
+            match next_connection(listener) {
+                Ok(_) => {}
+                Err(error) => assert!(affects_only_this_connection(&error), "{host}: {error}"),
+            }
+
+            let _client = TcpStream::connect(address).unwrap();
+            let connection = next_connection(listener).unwrap().unwrap();
+            assert_eq!(connection.peer.ip(), host);
+            assert_eq!(connection.interface, host);
+        }
     }
 
     #[test]
