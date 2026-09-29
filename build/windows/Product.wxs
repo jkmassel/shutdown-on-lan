@@ -14,6 +14,19 @@
 			<ComponentGroupRef Id="ProductComponents" />
 		</Feature>
 	
+		<!-- The service's start type before this installation replaced it – "#4" if an admin disabled it. AppSearch
+		     runs before the previous version is removed, so this is read from that version's service. -->
+		<Property Id="PREVIOUS_SERVICE_START_TYPE" Secure="yes">
+			<RegistrySearch Id="PreviousServiceStartType" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ShutdownOnLan" Name="Start" Type="raw" />
+		</Property>
+
+		<!-- Upgrading recreates the service as automatic, so disable it again if it was disabled -->
+		<SetProperty Id="KeepServiceDisabled" Value="&quot;[System64Folder]sc.exe&quot; config ShutdownOnLan start= disabled" Before="KeepServiceDisabled" Sequence="execute" />
+		<CustomAction Id="KeepServiceDisabled" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
+		<InstallExecuteSequence>
+			<Custom Action="KeepServiceDisabled" After="InstallServices">PREVIOUS_SERVICE_START_TYPE = "#4" AND NOT REMOVE~="ALL"</Custom>
+		</InstallExecuteSequence>
+
 		<Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
 		<Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
 	</Product>
@@ -42,7 +55,13 @@
 				<!-- The service logs to the Application event log. The executable contains the message resources. The
 				     name must match the event source in src/logging.rs -->
 				<util:EventSource Name="ShutdownOnLan" Log="Application" EventMessageFile="[#ShutdownOnLanExe]" SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
-				<ServiceControl Id="StartService" Stop="both" Start="install" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+				<ServiceControl Id="StopService" Stop="both" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+			</Component>
+			<!-- Starts the service after installing it, unless an admin had disabled it -->
+			<Component Id="StartServiceComponent" Guid="a40e9761-2b85-418d-9df4-56f551922216" KeyPath="yes">
+				<Condition>PREVIOUS_SERVICE_START_TYPE &lt;&gt; "#4"</Condition>
+				<CreateFolder />
+				<ServiceControl Id="StartService" Start="install" Name="ShutdownOnLan" Wait="yes" />
 			</Component>
 		</ComponentGroup>
 	</Fragment>

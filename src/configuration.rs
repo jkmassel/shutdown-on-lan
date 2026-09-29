@@ -39,7 +39,10 @@ pub const LEGACY_DEFAULT_SECRET_WARNING: &str = "The secret is still the default
 #[cfg(not(target_os = "linux"))]
 const LEGACY_DEFAULT_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
+// Unknown keys are rejected, because a missing `allowed_sources` allows any client – a misspelled one would
+// otherwise turn the allowlist off without any warning
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfiguration {
     pub port_number: u16,
     /// The local interface addresses to accept connections on. Empty means every interface.
@@ -196,6 +199,11 @@ fn validate_secret(secret: &str) -> Result<(), ConfigurationError> {
         return Err(ConfigurationError::InvalidSecret);
     }
 
+    // What's received is split into lines, and each one trimmed, before it's compared with the secret
+    if secret.trim() != secret || secret.contains('\n') {
+        return Err(ConfigurationError::UnmatchableSecret);
+    }
+
     Ok(())
 }
 
@@ -233,7 +241,15 @@ pub fn format_addresses(addresses: &[IpAddr]) -> String {
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::debug!("Fetching App Configuration");
-        Self::fetch_from(&Storage::system())
+        let storage = Storage::system();
+
+        for key in storage.preferences.keys_in_own_domain() {
+            log::warn!(
+                "Ignoring {key} in root's own preferences, where `sudo defaults write {PREFERENCES_DOMAIN}` puts it. Use `shutdown-on-lan set`, or `defaults write {PREFERENCES_FILE}`, instead, and remove it with `sudo defaults delete {PREFERENCES_DOMAIN}`."
+            );
+        }
+
+        Self::fetch_from(&storage)
     }
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
@@ -495,25 +511,21 @@ impl AppConfiguration {
 
     fn read_configuration_file() -> Result<String, ConfigurationError> {
         std::fs::read_to_string(Self::configuration_file_path()).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                ConfigurationError::RequiresRoot
-            } else {
-                ConfigurationError::InvalidConfigurationFile { source: error }
-            }
+            requires_root_or(error, |source| {
+                ConfigurationError::InvalidConfigurationFile { source }
+            })
         })
     }
 
     fn write_configuration_file(string: &str) -> Result<(), ConfigurationError> {
         let path = PathBuf::from(Self::configuration_file_path());
         write_private_file(&path, string.as_bytes()).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                ConfigurationError::RequiresRoot
-            } else {
+            requires_root_or(error, |source| {
                 ConfigurationError::ConfigurationFileUnwritable {
-                    source: error,
-                    path: path.into_os_string().into_string().unwrap(),
+                    source,
+                    path: path.display().to_string(),
                 }
-            }
+            })
         })
     }
 
@@ -922,21 +934,21 @@ impl Registry {
         }
     }
 
-    fn read_string(&self, key: ConfigurationRegistryKeys) -> Result<String, ConfigurationError> {
+    fn read<T: winreg::types::FromRegValue>(
+        &self,
+        key: ConfigurationRegistryKeys,
+    ) -> Result<T, ConfigurationError> {
         self.root_key
             .get_value(key)
             .map_err(|_error| ConfigurationError::RegistryKeyNotReadable(key))
     }
 
-    fn read_u16(&self, key: ConfigurationRegistryKeys) -> Result<u16, ConfigurationError> {
-        use std::convert::TryFrom;
-        let value = self.read_u32(key)?;
-        u16::try_from(value).map_err(|_error| ConfigurationError::RegistryKeyNotReadable(key))
+    fn read_string(&self, key: ConfigurationRegistryKeys) -> Result<String, ConfigurationError> {
+        self.read(key)
     }
 
-    fn read_u32(&self, key: ConfigurationRegistryKeys) -> Result<u32, ConfigurationError> {
-        self.root_key
-            .get_value(key)
+    fn read_u16(&self, key: ConfigurationRegistryKeys) -> Result<u16, ConfigurationError> {
+        u16::try_from(self.read::<u32>(key)?)
             .map_err(|_error| ConfigurationError::RegistryKeyNotReadable(key))
     }
 
@@ -988,6 +1000,12 @@ impl PreferenceKeys {
     const ADDRESSES: &'static str = "addresses";
     const SECRET: &'static str = "secret";
     const ALLOWED_SOURCES: &'static str = "allowed_sources";
+    const ALL: [&'static str; 4] = [
+        Self::PORT,
+        Self::ADDRESSES,
+        Self::SECRET,
+        Self::ALLOWED_SOURCES,
+    ];
 }
 
 #[cfg(target_os = "macos")]
@@ -1065,13 +1083,12 @@ impl Storage {
         match std::fs::read(&self.preferences_file) {
             Ok(bytes) => parse_dictionary(&bytes).map(|_| ()).ok_or_else(corrupt),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Err(ConfigurationError::RequiresRoot)
-            }
-            Err(error) => Err(ConfigurationError::PreferencesNotReadable {
-                source: error,
-                path: self.preferences_file.display().to_string(),
-            }),
+            Err(error) => Err(requires_root_or(error, |source| {
+                ConfigurationError::PreferencesNotReadable {
+                    source,
+                    path: self.preferences_file.display().to_string(),
+                }
+            })),
         }
     }
 
@@ -1093,26 +1110,23 @@ impl Storage {
             // Allow for a trailing newline, in case the file was written by hand
             Ok(contents) => Ok(Some(contents.trim_end_matches(['\r', '\n']).to_string())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Err(ConfigurationError::RequiresRoot)
-            }
-            Err(error) => Err(ConfigurationError::SecretNotReadable {
-                source: error,
-                path: self.secret_file.display().to_string(),
-            }),
+            Err(error) => Err(requires_root_or(error, |source| {
+                ConfigurationError::SecretNotReadable {
+                    source,
+                    path: self.secret_file.display().to_string(),
+                }
+            })),
         }
     }
 
     fn write_secret(&self, secret: &str) -> Result<(), ConfigurationError> {
-        let not_writable = |error: std::io::Error| {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                ConfigurationError::RequiresRoot
-            } else {
+        let not_writable = |error| {
+            requires_root_or(error, |source| {
                 ConfigurationError::ConfigurationFileUnwritable {
-                    source: error,
+                    source,
                     path: self.secret_file.display().to_string(),
                 }
-            }
+            })
         };
 
         if let Some(directory) = self.secret_file.parent() {
@@ -1123,8 +1137,8 @@ impl Storage {
     }
 }
 
-/// A preferences domain. Reads go through the standard search list, so values managed by a configuration
-/// profile take precedence. Writes go to `user`, for any host.
+/// A preferences domain. Reads and writes go to `user`, for any host – except that values managed by a
+/// configuration profile take precedence when reading.
 #[cfg(target_os = "macos")]
 struct Preferences {
     application_id: CFString,
@@ -1141,7 +1155,23 @@ impl Preferences {
         }
     }
 
+    /// Reads `key` from a configuration profile if one manages it, and otherwise from the domain `set` writes
+    /// to.
+    ///
+    /// Not with `CFPreferencesCopyAppValue` on its own, which would also look in the current user's own
+    /// domain first. `sudo defaults write com.jkmassel.shutdownonlan …` – naming the domain rather than the
+    /// plist's path – writes to root's, so the value would hide every later `set`, which would report that
+    /// it saved the change while nothing changed.
     fn get(&self, key: &str) -> Option<CFPropertyList> {
+        if self.is_forced(key) {
+            self.get_managed(key)
+        } else {
+            self.get_local(key)
+        }
+    }
+
+    /// Through the standard search list, which puts values managed by a configuration profile first.
+    fn get_managed(&self, key: &str) -> Option<CFPropertyList> {
         let key = CFString::new(key);
         let value = unsafe {
             core_foundation_sys::preferences::CFPreferencesCopyAppValue(
@@ -1153,19 +1183,33 @@ impl Preferences {
         Self::wrap(value)
     }
 
-    /// Like `get`, but only looks in the domain that `set` writes to.
+    /// Only looks in the domain that `set` writes to.
     fn get_local(&self, key: &str) -> Option<CFPropertyList> {
+        self.get_for_user(key, self.user)
+    }
+
+    fn get_for_user(&self, key: &str, user: CFStringRef) -> Option<CFPropertyList> {
         let key = CFString::new(key);
         let value = unsafe {
             core_foundation_sys::preferences::CFPreferencesCopyValue(
                 key.as_concrete_TypeRef(),
                 self.application_id.as_concrete_TypeRef(),
-                self.user,
+                user,
                 core_foundation_sys::preferences::kCFPreferencesAnyHost,
             )
         };
 
         Self::wrap(value)
+    }
+
+    /// The keys set in the current user's own domain, which `get` ignores.
+    fn keys_in_own_domain(&self) -> Vec<&'static str> {
+        let current_user = unsafe { core_foundation_sys::preferences::kCFPreferencesCurrentUser };
+
+        PreferenceKeys::ALL
+            .into_iter()
+            .filter(|key| self.get_for_user(key, current_user).is_some())
+            .collect()
     }
 
     fn wrap(value: core_foundation_sys::propertylist::CFPropertyListRef) -> Option<CFPropertyList> {
@@ -1223,6 +1267,20 @@ impl Preferences {
         } else {
             Err(ConfigurationError::RequiresRoot)
         }
+    }
+}
+
+/// Reports an error from reading or writing the configuration as needing root if it's a permission error –
+/// only root can read or change the configuration – and as `otherwise` if not.
+#[cfg(unix)]
+fn requires_root_or(
+    error: std::io::Error,
+    otherwise: impl FnOnce(std::io::Error) -> ConfigurationError,
+) -> ConfigurationError {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        ConfigurationError::RequiresRoot
+    } else {
+        otherwise(error)
     }
 }
 
@@ -1323,6 +1381,11 @@ pub enum ConfigurationError {
     #[error("The secret must be between 1 and {} bytes long", MAX_SECRET_LENGTH)]
     InvalidSecret,
 
+    #[error(
+        "The secret can't start or end with whitespace, or contain a line break – what's received is split into lines and trimmed before it's compared with the secret, so it would never match"
+    )]
+    UnmatchableSecret,
+
     #[error("The port must be between 1 and 65535")]
     InvalidPort,
 
@@ -1397,6 +1460,21 @@ mod tests {
             self.secret = update.secret.unwrap();
             Ok(())
         }
+    }
+
+    /// A configuration with every value changed from the defaults, for round-trip tests.
+    #[cfg(not(target_os = "linux"))]
+    fn custom_configuration() -> AppConfiguration {
+        let mut configuration = AppConfiguration {
+            port_number: 12345,
+            ..AppConfiguration::default()
+        };
+        configuration.set_addresses("10.0.1.100,::1").unwrap();
+        configuration
+            .set_secret("custom secret".to_string())
+            .unwrap();
+        configuration.set_allowed_sources("10.0.1.50").unwrap();
+        configuration
     }
 
     #[test]
@@ -1566,6 +1644,30 @@ mod tests {
     }
 
     #[test]
+    fn test_secrets_that_could_never_match_are_rejected() {
+        let mut configuration = AppConfiguration::default();
+
+        for secret in [" leading", "trailing ", "trailing\r", "two\nlines", "\ttab"] {
+            assert!(
+                matches!(
+                    configuration.set_secret(secret.to_string()),
+                    Err(ConfigurationError::UnmatchableSecret)
+                ),
+                "{secret:?}"
+            );
+        }
+
+        // Only the ends are trimmed
+        configuration
+            .set_secret("inner space\rand return".to_string())
+            .unwrap();
+
+        // For instance, written by hand
+        configuration.secret = "secret ".to_string();
+        assert!(configuration.validate().is_err());
+    }
+
+    #[test]
     fn test_legacy_default_secret_is_detected() {
         let mut configuration = AppConfiguration::default();
         assert!(!configuration.uses_legacy_default_secret());
@@ -1670,19 +1772,6 @@ mod tests {
             std::fs::write(&path, contents).unwrap();
             path
         }
-
-        fn custom_configuration() -> AppConfiguration {
-            let mut configuration = AppConfiguration {
-                port_number: 12345,
-                ..AppConfiguration::default()
-            };
-            configuration.set_addresses("10.0.1.100,::1").unwrap();
-            configuration
-                .set_secret("custom secret".to_string())
-                .unwrap();
-            configuration.set_allowed_sources("10.0.1.50").unwrap();
-            configuration
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1731,7 +1820,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let test = TestStorage::new("round-trip");
-        let configuration = TestStorage::custom_configuration();
+        let configuration = custom_configuration();
 
         configuration.save_to(&test.storage).unwrap();
 
@@ -1769,7 +1858,7 @@ mod tests {
     #[test]
     fn test_only_missing_values_are_restored() {
         let test = TestStorage::new("missing-value");
-        let configuration = TestStorage::custom_configuration();
+        let configuration = custom_configuration();
 
         configuration.save_to(&test.storage).unwrap();
         test.preferences().remove(PreferenceKeys::PORT);
@@ -1790,9 +1879,7 @@ mod tests {
     fn test_preferences_are_stored_in_the_expected_file() {
         let test = TestStorage::new("preferences-file");
 
-        TestStorage::custom_configuration()
-            .save_to(&test.storage)
-            .unwrap();
+        custom_configuration().save_to(&test.storage).unwrap();
 
         assert!(test.storage.preferences_file.exists());
     }
@@ -1809,7 +1896,7 @@ mod tests {
             Err(ConfigurationError::CorruptPreferencesFile { .. })
         ));
         assert!(matches!(
-            TestStorage::custom_configuration().save_to(&test.storage),
+            custom_configuration().save_to(&test.storage),
             Err(ConfigurationError::CorruptPreferencesFile { .. })
         ));
         assert_eq!(
@@ -1822,9 +1909,7 @@ mod tests {
     #[test]
     fn test_invalid_preferences_are_reported() {
         let test = TestStorage::new("invalid-value");
-        TestStorage::custom_configuration()
-            .save_to(&test.storage)
-            .unwrap();
+        custom_configuration().save_to(&test.storage).unwrap();
 
         // The port should be a number
         test.preferences().set(
@@ -1844,7 +1929,7 @@ mod tests {
     #[test]
     fn test_update_replaces_an_invalid_value_and_leaves_the_rest() {
         let test = TestStorage::new("update-invalid-value");
-        let configuration = TestStorage::custom_configuration();
+        let configuration = custom_configuration();
         configuration.save_to(&test.storage).unwrap();
 
         test.preferences().set(
@@ -1873,9 +1958,7 @@ mod tests {
     #[test]
     fn test_secret_file_written_by_hand_is_read() {
         let test = TestStorage::new("secret-by-hand");
-        TestStorage::custom_configuration()
-            .save_to(&test.storage)
-            .unwrap();
+        custom_configuration().save_to(&test.storage).unwrap();
 
         std::fs::write(&test.storage.secret_file, "typed secret\n").unwrap();
 
@@ -1889,9 +1972,7 @@ mod tests {
     #[test]
     fn test_secret_in_preferences_is_moved_to_the_secret_file() {
         let test = TestStorage::new("secret-in-preferences");
-        TestStorage::custom_configuration()
-            .save_to(&test.storage)
-            .unwrap();
+        custom_configuration().save_to(&test.storage).unwrap();
 
         // For instance, with `defaults write`
         test.preferences().set(
@@ -1913,9 +1994,7 @@ mod tests {
     #[test]
     fn test_invalid_secret_in_preferences_is_not_moved() {
         let test = TestStorage::new("empty-secret-in-preferences");
-        TestStorage::custom_configuration()
-            .save_to(&test.storage)
-            .unwrap();
+        custom_configuration().save_to(&test.storage).unwrap();
 
         test.preferences().set(
             PreferenceKeys::SECRET,
@@ -1945,7 +2024,7 @@ mod tests {
             migrated,
             AppConfiguration {
                 allowed_sources: Vec::new(),
-                ..TestStorage::custom_configuration()
+                ..custom_configuration()
             }
         );
         assert!(migrated.accepts_connections_from(&"10.0.1.99".parse().unwrap()));
@@ -2007,6 +2086,22 @@ mod tests {
         assert!(toml.contains(r#"addresses = ["10.0.1.100", "::1"]"#));
         assert!(toml.contains(r#"allowed_sources = ["10.0.1.50"]"#));
         assert_eq!(AppConfiguration::from_toml(&toml).unwrap(), configuration);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_misspelled_toml_keys_are_rejected() {
+        let hand_written = r#"
+            port_number = 53632
+            addresses = []
+            secret = "a secret"
+            allowed_source = ["10.0.1.50"]
+        "#;
+
+        assert!(matches!(
+            AppConfiguration::from_toml(hand_written),
+            Err(ConfigurationError::CorruptTomlConfigurationFile(_))
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -2098,19 +2193,6 @@ mod tests {
 
             TestRegistry { path, registry }
         }
-
-        fn custom_configuration() -> AppConfiguration {
-            let mut configuration = AppConfiguration {
-                port_number: 12345,
-                ..AppConfiguration::default()
-            };
-            configuration.set_addresses("10.0.1.100").unwrap();
-            configuration
-                .set_secret("custom secret".to_string())
-                .unwrap();
-            configuration.set_allowed_sources("10.0.1.50").unwrap();
-            configuration
-        }
     }
 
     #[cfg(windows)]
@@ -2131,7 +2213,7 @@ mod tests {
     #[test]
     fn test_registry_round_trip() {
         let test = TestRegistry::new("round-trip");
-        let configuration = TestRegistry::custom_configuration();
+        let configuration = custom_configuration();
 
         configuration.save_to(&test.registry).unwrap();
 
@@ -2164,7 +2246,7 @@ mod tests {
     #[test]
     fn test_upgraded_registry_gets_empty_allowed_sources() {
         let test = TestRegistry::new("upgrade");
-        let configuration = TestRegistry::custom_configuration();
+        let configuration = custom_configuration();
 
         // Configurations written by older versions don't have `allowed_sources`
         configuration.save_to(&test.registry).unwrap();
@@ -2233,7 +2315,7 @@ mod tests {
     #[test]
     fn test_only_missing_registry_values_are_restored() {
         let test = TestRegistry::new("missing-value");
-        let configuration = TestRegistry::custom_configuration();
+        let configuration = custom_configuration();
 
         configuration.save_to(&test.registry).unwrap();
         test.registry
@@ -2256,7 +2338,7 @@ mod tests {
     #[test]
     fn test_unreadable_registry_values_are_not_overwritten() {
         let test = TestRegistry::new("unreadable-value");
-        let configuration = TestRegistry::custom_configuration();
+        let configuration = custom_configuration();
 
         configuration.save_to(&test.registry).unwrap();
 
@@ -2279,7 +2361,7 @@ mod tests {
     #[test]
     fn test_update_replaces_an_invalid_value_and_leaves_the_rest() {
         let test = TestRegistry::new("update-invalid-value");
-        let configuration = TestRegistry::custom_configuration();
+        let configuration = custom_configuration();
         configuration.save_to(&test.registry).unwrap();
 
         test.registry
@@ -2334,9 +2416,7 @@ mod tests {
     #[test]
     fn test_hand_edited_registry_addresses_do_not_stop_the_configuration_loading() {
         let test = TestRegistry::new("hand-edited-addresses");
-        TestRegistry::custom_configuration()
-            .save_to(&test.registry)
-            .unwrap();
+        custom_configuration().save_to(&test.registry).unwrap();
 
         test.registry
             .root_key

@@ -53,7 +53,7 @@ enum Command {
         #[arg(long = "ip-address")]
         ip_address: Option<String>,
 
-        /// The secret that shuts this machine down
+        /// The secret that shuts this machine down. Pass `-` to read it from standard input instead, which keeps it out of the process list and sudo's log.
         #[arg(long = "secret")]
         secret: Option<String>,
 
@@ -123,6 +123,11 @@ fn main() -> Result<()> {
             }
 
             if let Some(secret) = secret {
+                let secret = if secret == "-" {
+                    read_secret_from_stdin()?
+                } else {
+                    secret
+                };
                 update.set_secret(secret)?;
                 println!("Secret updated");
             }
@@ -199,6 +204,16 @@ const RESTART_COMMAND: &str = "sudo launchctl kickstart -k system/com.jkmassel.s
 
 #[cfg(windows)]
 const RESTART_COMMAND: &str = "Restart-Service ShutdownOnLan (from an Administrative PowerShell)";
+
+/// Reads one line, without its line ending.
+fn read_secret_from_stdin() -> Result<String> {
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("Unable to read the secret from standard input")?;
+
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
 
 /// Reports anything that would stop the service from starting, or that should be changed – other values
 /// than the ones just set could be invalid.

@@ -1,9 +1,10 @@
 name: CI
 
 on:
+  # Only main – a push to a pull request's branch is already checked by `pull_request`, so running on every
+  # branch ran CI twice for every commit
   push:
-    # `**` rather than `*`, which doesn't match branch names containing a `/`
-    branches: [ '**' ]
+    branches: [ main ]
   # Every base branch, so that stacked pull requests are checked too
   pull_request:
 
@@ -67,7 +68,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Install packaging tools
-        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.0
+        run: .github/commands/install-packaging-tools.sh
       - name: Build packages
         run: build/linux/build-packages.sh ${{ matrix.arch }}
       - name: Install the .deb
