@@ -39,7 +39,10 @@ pub const LEGACY_DEFAULT_SECRET_WARNING: &str = "The secret is still the default
 #[cfg(not(target_os = "linux"))]
 const LEGACY_DEFAULT_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
+// Unknown keys are rejected, because a missing `allowed_sources` allows any client – a misspelled one would
+// otherwise turn the allowlist off without any warning
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfiguration {
     pub port_number: u16,
     /// The local interface addresses to accept connections on. Empty means every interface.
@@ -2007,6 +2010,22 @@ mod tests {
         assert!(toml.contains(r#"addresses = ["10.0.1.100", "::1"]"#));
         assert!(toml.contains(r#"allowed_sources = ["10.0.1.50"]"#));
         assert_eq!(AppConfiguration::from_toml(&toml).unwrap(), configuration);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_misspelled_toml_keys_are_rejected() {
+        let hand_written = r#"
+            port_number = 53632
+            addresses = []
+            secret = "a secret"
+            allowed_source = ["10.0.1.50"]
+        "#;
+
+        assert!(matches!(
+            AppConfiguration::from_toml(hand_written),
+            Err(ConfigurationError::CorruptTomlConfigurationFile(_))
+        ));
     }
 
     #[cfg(target_os = "linux")]
