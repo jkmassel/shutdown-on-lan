@@ -44,9 +44,12 @@ const GIVE_UP_ACCEPTING_AFTER: Duration = Duration::from_secs(60);
 /// Listens for connections until something goes wrong that the service can't recover from – it never
 /// returns `Ok`.
 pub fn run(configuration: AppConfiguration) -> io::Result<()> {
-    configuration
-        .validate()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    configuration.validate().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{error} – fix it with `shutdown-on-lan set`"),
+        )
+    })?;
 
     if configuration.uses_legacy_default_secret() {
         log::warn!("{LEGACY_DEFAULT_SECRET_WARNING}");

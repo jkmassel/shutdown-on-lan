@@ -58,33 +58,12 @@ impl AppConfiguration {
         Self::fetch()
     }
 
-    /// Sets the local interface addresses from a comma-separated list. An empty string accepts
-    /// connections on every interface.
-    pub fn set_addresses(&mut self, string: &str) -> Result<(), AddrParseError> {
-        self.addresses = parse_optional_addresses(string)?;
-        Ok(())
-    }
-
-    /// Sets the allowed client addresses from a comma-separated list. An empty string allows any client.
-    pub fn set_allowed_sources(&mut self, string: &str) -> Result<(), ConfigurationError> {
-        let allowed_sources = parse_optional_addresses(string)?;
-        validate_allowed_sources(&allowed_sources)?;
-        self.allowed_sources = allowed_sources;
-        Ok(())
-    }
-
     /// Checks the values that can't be checked while parsing, because they could have been written by hand
     /// (or managed by a configuration profile) – for instance, an empty secret, which would never match.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         validate_port(self.port_number)?;
         validate_secret(&self.secret)?;
         validate_allowed_sources(&self.allowed_sources)
-    }
-
-    pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
-        validate_secret(&secret)?;
-        self.secret = secret;
-        Ok(())
     }
 
     /// Whether the secret is the one every installation shared before 0.4.0. It's kept on upgrade, because
@@ -122,6 +101,57 @@ impl AppConfiguration {
     /// Whether a client at `ip` is allowed to connect.
     pub fn accepts_connections_from(&self, ip: &IpAddr) -> bool {
         self.allowed_sources.is_empty() || contains_address(&self.allowed_sources, ip)
+    }
+}
+
+/// Changes made with `set`. Only the values being changed are read and written, so `set` can replace a
+/// stored value that's invalid – loading the whole configuration first would fail on it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ConfigurationUpdate {
+    pub port_number: Option<u16>,
+    pub addresses: Option<Vec<IpAddr>>,
+    pub secret: Option<String>,
+    pub allowed_sources: Option<Vec<IpAddr>>,
+}
+
+impl ConfigurationUpdate {
+    pub fn set_port(&mut self, port: u16) -> Result<(), ConfigurationError> {
+        validate_port(port)?;
+        self.port_number = Some(port);
+        Ok(())
+    }
+
+    /// Sets the local interface addresses from a comma-separated list. An empty string accepts
+    /// connections on every interface.
+    pub fn set_addresses(&mut self, string: &str) -> Result<(), ConfigurationError> {
+        self.addresses = Some(parse_optional_addresses(string)?);
+        Ok(())
+    }
+
+    pub fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
+        validate_secret(&secret)?;
+        self.secret = Some(secret);
+        Ok(())
+    }
+
+    /// Sets the allowed client addresses from a comma-separated list. An empty string allows any client.
+    pub fn set_allowed_sources(&mut self, string: &str) -> Result<(), ConfigurationError> {
+        let allowed_sources = parse_optional_addresses(string)?;
+        validate_allowed_sources(&allowed_sources)?;
+        self.allowed_sources = Some(allowed_sources);
+        Ok(())
+    }
+}
+
+/// Every value, for writing a whole configuration.
+impl From<&AppConfiguration> for ConfigurationUpdate {
+    fn from(configuration: &AppConfiguration) -> Self {
+        ConfigurationUpdate {
+            port_number: Some(configuration.port_number),
+            addresses: Some(configuration.addresses.clone()),
+            secret: Some(configuration.secret.clone()),
+            allowed_sources: Some(configuration.allowed_sources.clone()),
+        }
     }
 }
 
@@ -206,10 +236,6 @@ impl AppConfiguration {
         Self::fetch_from(&Storage::system())
     }
 
-    pub fn save(&self) -> Result<(), ConfigurationError> {
-        self.save_to(&Storage::system())
-    }
-
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
         log::debug!("Checking whether configuration needs to be created");
         Self::prepare(&Storage::system(), Path::new(LEGACY_CONFIGURATION_FILE))
@@ -237,45 +263,6 @@ impl AppConfiguration {
 
         Self::from_property_lists(|key| storage.preferences.get(key), secret)
             .map_err(ConfigurationError::PreferenceNotReadable)
-    }
-
-    /// Writes the values that differ from the stored ones. Fails without writing anything if one of them
-    /// is managed by a configuration profile, because the change would have no effect.
-    fn save_to(&self, storage: &Storage) -> Result<(), ConfigurationError> {
-        storage.check_preferences_file()?;
-        let preferences = &storage.preferences;
-
-        let changes: Vec<(&'static str, CFPropertyList)> = self
-            .to_property_lists()
-            .into_iter()
-            .filter(|(key, value)| preferences.get(key).as_ref() != Some(value))
-            .collect();
-        let secret_changed = storage.read_secret()?.as_deref() != Some(self.secret.as_str());
-
-        let managed_key = changes
-            .iter()
-            .map(|(key, _)| *key)
-            .chain(secret_changed.then_some(PreferenceKeys::SECRET))
-            .find(|key| preferences.is_forced(key));
-        if let Some(key) = managed_key {
-            return Err(ConfigurationError::PreferenceIsManaged(key));
-        }
-
-        if secret_changed {
-            log::debug!("Setting secret");
-            storage.write_secret(&self.secret)?;
-        }
-
-        for (key, value) in &changes {
-            log::debug!("Setting {}", key);
-            preferences.set(key, value);
-        }
-
-        if changes.is_empty() {
-            Ok(())
-        } else {
-            preferences.synchronize()
-        }
     }
 
     /// Writes defaults for any values that are missing. Existing values (including those managed by a
@@ -414,42 +401,109 @@ impl AppConfiguration {
 
     /// Every value except the secret, which is stored separately.
     fn to_property_lists(&self) -> Vec<(&'static str, CFPropertyList)> {
-        vec![
-            (
-                PreferenceKeys::PORT,
-                CFNumber::from(self.port_number as i32).into_CFPropertyList(),
-            ),
-            (
-                PreferenceKeys::ADDRESSES,
-                addresses_to_property_list(&self.addresses),
-            ),
-            (
-                PreferenceKeys::ALLOWED_SOURCES,
-                addresses_to_property_list(&self.allowed_sources),
-            ),
+        ConfigurationUpdate::from(self).to_property_lists()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ConfigurationUpdate {
+    pub fn apply(&self) -> Result<(), ConfigurationError> {
+        AppConfiguration::create_configuration_if_not_exists()?;
+        self.apply_to(&Storage::system())
+    }
+
+    /// Writes the values that differ from the stored ones. Fails without writing anything if one of them
+    /// is managed by a configuration profile, because the change would have no effect.
+    fn apply_to(&self, storage: &Storage) -> Result<(), ConfigurationError> {
+        storage.check_preferences_file()?;
+        let preferences = &storage.preferences;
+
+        let changes: Vec<(&'static str, CFPropertyList)> = self
+            .to_property_lists()
+            .into_iter()
+            .filter(|(key, value)| preferences.get(key).as_ref() != Some(value))
+            .collect();
+        // A stored secret that can't be read is replaced, rather than stopping it from being replaced
+        let secret = self
+            .secret
+            .as_deref()
+            .filter(|secret| storage.read_secret().ok().flatten().as_deref() != Some(*secret));
+
+        let managed_key = changes
+            .iter()
+            .map(|(key, _)| *key)
+            .chain(secret.map(|_| PreferenceKeys::SECRET))
+            .find(|key| preferences.is_forced(key));
+        if let Some(key) = managed_key {
+            return Err(ConfigurationError::PreferenceIsManaged(key));
+        }
+
+        if let Some(secret) = secret {
+            log::debug!("Setting secret");
+            storage.write_secret(secret)?;
+        }
+
+        for (key, value) in &changes {
+            log::debug!("Setting {}", key);
+            preferences.set(key, value);
+        }
+
+        if changes.is_empty() {
+            Ok(())
+        } else {
+            preferences.synchronize()
+        }
+    }
+
+    /// The values being changed, except the secret, which is stored separately.
+    fn to_property_lists(&self) -> Vec<(&'static str, CFPropertyList)> {
+        [
+            self.port_number.map(|port| {
+                (
+                    PreferenceKeys::PORT,
+                    CFNumber::from(port as i32).into_CFPropertyList(),
+                )
+            }),
+            self.addresses.as_ref().map(|addresses| {
+                (
+                    PreferenceKeys::ADDRESSES,
+                    addresses_to_property_list(addresses),
+                )
+            }),
+            self.allowed_sources.as_ref().map(|addresses| {
+                (
+                    PreferenceKeys::ALLOWED_SOURCES,
+                    addresses_to_property_list(addresses),
+                )
+            }),
         ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
 #[cfg(target_os = "linux")]
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
-        let path = Self::configuration_file_path();
+        Self::from_toml(&Self::read_configuration_file()?)
+    }
 
-        let string = std::fs::read_to_string(path).map_err(|error| {
+    pub fn save(&self) -> Result<(), ConfigurationError> {
+        Self::write_configuration_file(&self.to_toml()?)
+    }
+
+    fn read_configuration_file() -> Result<String, ConfigurationError> {
+        std::fs::read_to_string(Self::configuration_file_path()).map_err(|error| {
             if error.kind() == std::io::ErrorKind::PermissionDenied {
                 ConfigurationError::RequiresRoot
             } else {
                 ConfigurationError::InvalidConfigurationFile { source: error }
             }
-        })?;
-
-        Self::from_toml(&string)
+        })
     }
 
-    pub fn save(&self) -> Result<(), ConfigurationError> {
-        let string = self.to_toml()?;
-
+    fn write_configuration_file(string: &str) -> Result<(), ConfigurationError> {
         let path = PathBuf::from(Self::configuration_file_path());
         write_private_file(&path, string.as_bytes()).map_err(|error| {
             if error.kind() == std::io::ErrorKind::PermissionDenied {
@@ -523,15 +577,56 @@ impl AppConfiguration {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl ConfigurationUpdate {
+    pub fn apply(&self) -> Result<(), ConfigurationError> {
+        AppConfiguration::create_configuration_if_not_exists()?;
+        let updated = self.apply_to_toml(&AppConfiguration::read_configuration_file()?)?;
+        AppConfiguration::write_configuration_file(&updated)
+    }
+
+    /// Replaces the values being changed in a configuration file. The others are kept as they are, without
+    /// being parsed, so one that's invalid doesn't stop the others from being changed.
+    fn apply_to_toml(&self, string: &str) -> Result<String, ConfigurationError> {
+        let mut table: toml::Table = string
+            .parse()
+            .map_err(ConfigurationError::CorruptTomlConfigurationFile)?;
+
+        // The same names that `AppConfiguration`'s fields have
+        let mut set = |key: &str, value: Option<toml::Value>| {
+            if let Some(value) = value {
+                table.insert(key.to_string(), value);
+            }
+        };
+        let addresses = |addresses: &Vec<IpAddr>| {
+            toml::Value::Array(
+                addresses
+                    .iter()
+                    .map(|ip| toml::Value::String(ip.to_string()))
+                    .collect(),
+            )
+        };
+        set(
+            "port_number",
+            self.port_number
+                .map(|port| toml::Value::Integer(port.into())),
+        );
+        set("addresses", self.addresses.as_ref().map(addresses));
+        set("secret", self.secret.clone().map(toml::Value::String));
+        set(
+            "allowed_sources",
+            self.allowed_sources.as_ref().map(addresses),
+        );
+
+        toml::to_string(&table).map_err(|_error| ConfigurationError::InvalidConfiguration)
+    }
+}
+
 #[cfg(windows)]
 impl AppConfiguration {
     pub fn fetch() -> Result<AppConfiguration, ConfigurationError> {
         log::info!("Looking up configuration");
         Self::fetch_from(&Registry::with_default_root_key()?)
-    }
-
-    pub fn save(&self) -> Result<(), ConfigurationError> {
-        self.save_to(&Registry::with_default_root_key()?)
     }
 
     pub fn create_configuration_if_not_exists() -> Result<(), ConfigurationError> {
@@ -546,9 +641,7 @@ impl AppConfiguration {
 
         Ok(AppConfiguration {
             port_number: registry.read_u16(ConfigurationRegistryKeys::Port)?,
-            addresses: parse_optional_addresses(&ips_string).map_err(|_error| {
-                ConfigurationError::RegistryKeyNotReadable(ConfigurationRegistryKeys::IpAddress)
-            })?,
+            addresses: parse_registry_addresses(&ips_string),
             secret: registry.read_string(ConfigurationRegistryKeys::Secret)?,
             allowed_sources: parse_optional_addresses(
                 &registry.read_string(ConfigurationRegistryKeys::AllowedSources)?,
@@ -561,30 +654,11 @@ impl AppConfiguration {
         })
     }
 
-    fn save_to(&self, registry: &Registry) -> Result<(), ConfigurationError> {
-        let joined_addresses = format_addresses(&self.addresses);
-        registry.write_string(ConfigurationRegistryKeys::IpAddress, &joined_addresses)?;
-        log::debug!("Set IP Addresses to {}", &joined_addresses);
-
-        let u32_port_number = self.port_number as u32;
-        registry.write_u32(ConfigurationRegistryKeys::Port, u32_port_number)?;
-        log::debug!("Set Port to {}", u32_port_number);
-
-        registry.write_string(ConfigurationRegistryKeys::Secret, &self.secret)?;
-        log::debug!("Set secret");
-
-        let joined_sources = format_addresses(&self.allowed_sources);
-        registry.write_string(ConfigurationRegistryKeys::AllowedSources, &joined_sources)?;
-        log::debug!("Set allowed sources to {:?}", &joined_sources);
-
-        Ok(())
-    }
-
     /// Like `forget_legacy_default_addresses`, for the value stored in the registry.
     fn forget_legacy_default_addresses_in(registry: &Registry) -> Result<(), ConfigurationError> {
         let stored = registry.read_string(ConfigurationRegistryKeys::IpAddress)?;
         let mut configuration = AppConfiguration {
-            addresses: parse_optional_addresses(&stored).unwrap_or_default(),
+            addresses: parse_registry_addresses(&stored),
             ..AppConfiguration::default()
         };
         configuration.forget_legacy_default_addresses();
@@ -601,7 +675,7 @@ impl AppConfiguration {
     fn write_missing_defaults(registry: &Registry) -> Result<(), ConfigurationError> {
         let defaults = AppConfiguration::default();
 
-        if !registry.contains::<String>(ConfigurationRegistryKeys::IpAddress)? {
+        if !registry.contains(ConfigurationRegistryKeys::IpAddress)? {
             log::info!("Writing default IP addresses to registry");
             registry.write_string(
                 ConfigurationRegistryKeys::IpAddress,
@@ -609,18 +683,18 @@ impl AppConfiguration {
             )?;
         }
 
-        if !registry.contains::<u32>(ConfigurationRegistryKeys::Port)? {
+        if !registry.contains(ConfigurationRegistryKeys::Port)? {
             log::info!("Writing default port to registry");
             registry.write_u32(ConfigurationRegistryKeys::Port, defaults.port_number as u32)?;
         }
 
-        if !registry.contains::<String>(ConfigurationRegistryKeys::Secret)? {
+        if !registry.contains(ConfigurationRegistryKeys::Secret)? {
             log::info!("Writing default secret to registry");
             registry.write_string(ConfigurationRegistryKeys::Secret, &defaults.secret)?;
         }
 
         // Only versions before 0.4.0 left `allowed_sources` out, so this is an upgrade from one of them
-        if !registry.contains::<String>(ConfigurationRegistryKeys::AllowedSources)? {
+        if !registry.contains(ConfigurationRegistryKeys::AllowedSources)? {
             Self::forget_legacy_default_addresses_in(registry)?;
 
             log::info!("Writing default allowed sources to registry");
@@ -632,6 +706,63 @@ impl AppConfiguration {
 
         Ok(())
     }
+}
+
+#[cfg(windows)]
+impl ConfigurationUpdate {
+    pub fn apply(&self) -> Result<(), ConfigurationError> {
+        AppConfiguration::create_configuration_if_not_exists()?;
+        self.apply_to(&Registry::with_default_root_key()?)
+    }
+
+    fn apply_to(&self, registry: &Registry) -> Result<(), ConfigurationError> {
+        if let Some(addresses) = &self.addresses {
+            let joined_addresses = format_addresses(addresses);
+            registry.write_string(ConfigurationRegistryKeys::IpAddress, &joined_addresses)?;
+            log::debug!("Set IP Addresses to {joined_addresses}");
+        }
+
+        if let Some(port) = self.port_number {
+            registry.write_u32(ConfigurationRegistryKeys::Port, port.into())?;
+            log::debug!("Set Port to {port}");
+        }
+
+        if let Some(secret) = &self.secret {
+            registry.write_string(ConfigurationRegistryKeys::Secret, secret)?;
+            log::debug!("Set secret");
+        }
+
+        if let Some(allowed_sources) = &self.allowed_sources {
+            let joined_sources = format_addresses(allowed_sources);
+            registry.write_string(ConfigurationRegistryKeys::AllowedSources, &joined_sources)?;
+            log::debug!("Set allowed sources to {joined_sources:?}");
+        }
+
+        Ok(())
+    }
+}
+
+/// Parses the `ip_addresses` registry value. Versions before 0.4.0 split it on commas and skipped anything
+/// that wasn't an address – and never enforced the result – so hand-edited values such as `a,,b`, `a;b`,
+/// `localhost`, CIDR ranges and multi-string values all ran. Rather than refusing to start on them after an
+/// upgrade, this also accepts semicolons and whitespace (including the line breaks a multi-string value is
+/// read with) as separators, and skips anything else that isn't an address with a warning. That can only
+/// widen the interfaces connections are accepted on, never the clients – `allowed_sources` is parsed strictly.
+#[cfg(windows)]
+fn parse_registry_addresses(string: &str) -> Vec<IpAddr> {
+    string
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .filter(|item| !item.is_empty())
+        .filter_map(|item| match item.parse() {
+            Ok(address) => Some(address),
+            Err(_) => {
+                log::warn!(
+                    "Ignoring {item:?} in the ip_addresses registry value, because it isn't an IP address"
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// A new installation accepts connections from any client on every interface, so each one gets its own
@@ -780,13 +911,11 @@ impl Registry {
         Ok(())
     }
 
-    /// Whether `key` has a value. Errors other than the value being absent are reported, so that a
-    /// value that exists but can't be read isn't mistaken for a missing one and overwritten.
-    fn contains<T: winreg::types::FromRegValue>(
-        &self,
-        key: ConfigurationRegistryKeys,
-    ) -> Result<bool, ConfigurationError> {
-        match self.root_key.get_value::<T, _>(key) {
+    /// Whether `key` has a value, of any type. A value that exists but can't be read – because it has the
+    /// wrong type, for instance – counts, so that it isn't mistaken for a missing one and overwritten. It's
+    /// reported when the configuration is read instead, and `set` can replace it.
+    fn contains(&self, key: ConfigurationRegistryKeys) -> Result<bool, ConfigurationError> {
+        match self.root_key.get_raw_value(key) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(_error) => Err(ConfigurationError::RegistryKeyNotReadable(key)),
@@ -1240,6 +1369,47 @@ pub enum ConfigurationError {
 mod tests {
     use super::*;
 
+    /// Applies changes to a configuration in memory, the way `set` would to storage.
+    trait Set {
+        fn set_addresses(&mut self, string: &str) -> Result<(), ConfigurationError>;
+        fn set_allowed_sources(&mut self, string: &str) -> Result<(), ConfigurationError>;
+        fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError>;
+    }
+
+    impl Set for AppConfiguration {
+        fn set_addresses(&mut self, string: &str) -> Result<(), ConfigurationError> {
+            let mut update = ConfigurationUpdate::default();
+            update.set_addresses(string)?;
+            self.addresses = update.addresses.unwrap();
+            Ok(())
+        }
+
+        fn set_allowed_sources(&mut self, string: &str) -> Result<(), ConfigurationError> {
+            let mut update = ConfigurationUpdate::default();
+            update.set_allowed_sources(string)?;
+            self.allowed_sources = update.allowed_sources.unwrap();
+            Ok(())
+        }
+
+        fn set_secret(&mut self, secret: String) -> Result<(), ConfigurationError> {
+            let mut update = ConfigurationUpdate::default();
+            update.set_secret(secret)?;
+            self.secret = update.secret.unwrap();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_port_zero_cannot_be_set() {
+        let mut update = ConfigurationUpdate::default();
+        assert!(matches!(
+            update.set_port(0),
+            Err(ConfigurationError::InvalidPort)
+        ));
+        update.set_port(1).unwrap();
+        assert_eq!(update.port_number, Some(1));
+    }
+
     #[test]
     fn test_set_addresses_accepts_a_comma_separated_list() {
         let mut configuration = AppConfiguration::default();
@@ -1516,6 +1686,13 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    impl AppConfiguration {
+        fn save_to(&self, storage: &Storage) -> Result<(), ConfigurationError> {
+            ConfigurationUpdate::from(self).apply_to(storage)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     impl Drop for TestStorage {
         fn drop(&mut self) {
             for key in [
@@ -1665,6 +1842,35 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn test_update_replaces_an_invalid_value_and_leaves_the_rest() {
+        let test = TestStorage::new("update-invalid-value");
+        let configuration = TestStorage::custom_configuration();
+        configuration.save_to(&test.storage).unwrap();
+
+        test.preferences().set(
+            PreferenceKeys::PORT,
+            &CFString::new("not a number").into_CFPropertyList(),
+        );
+        std::fs::write(&test.storage.secret_file, "").unwrap();
+        assert!(AppConfiguration::fetch_from(&test.storage).is_err());
+
+        let mut update = ConfigurationUpdate::default();
+        update.set_port(4321).unwrap();
+        update.set_secret("new secret".to_string()).unwrap();
+        update.apply_to(&test.storage).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.storage).unwrap(),
+            AppConfiguration {
+                port_number: 4321,
+                secret: "new secret".to_string(),
+                ..configuration
+            }
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn test_secret_file_written_by_hand_is_read() {
         let test = TestStorage::new("secret-by-hand");
         TestStorage::custom_configuration()
@@ -1805,6 +2011,53 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn test_update_replaces_an_invalid_value_and_leaves_the_rest() {
+        let hand_written = r#"
+            port_number = "not a number"
+            addresses = ["10.0.1.100"]
+            secret = ""
+            allowed_sources = ["10.0.1.50"]
+        "#;
+        assert!(
+            AppConfiguration::from_toml(hand_written)
+                .and_then(|configuration| configuration.validate())
+                .is_err()
+        );
+
+        let mut update = ConfigurationUpdate::default();
+        update.set_port(4321).unwrap();
+        update.set_secret("new secret".to_string()).unwrap();
+        let updated = update.apply_to_toml(hand_written).unwrap();
+
+        let mut expected = AppConfiguration {
+            port_number: 4321,
+            secret: "new secret".to_string(),
+            ..AppConfiguration::default()
+        };
+        expected.set_addresses("10.0.1.100").unwrap();
+        expected.set_allowed_sources("10.0.1.50").unwrap();
+        assert_eq!(AppConfiguration::from_toml(&updated).unwrap(), expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_update_writes_values_that_round_trip() {
+        let configuration = AppConfiguration::default();
+        let mut update = ConfigurationUpdate::default();
+        update.set_addresses("10.0.1.100, ::1").unwrap();
+        update.set_allowed_sources("").unwrap();
+
+        let updated = update
+            .apply_to_toml(&configuration.to_toml().unwrap())
+            .unwrap();
+
+        let mut expected = configuration;
+        expected.set_addresses("10.0.1.100,::1").unwrap();
+        assert_eq!(AppConfiguration::from_toml(&updated).unwrap(), expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn test_toml_without_allowed_sources_accepts_any_client() {
         let configuration = AppConfiguration::default();
 
@@ -1857,6 +2110,13 @@ mod tests {
                 .unwrap();
             configuration.set_allowed_sources("10.0.1.50").unwrap();
             configuration
+        }
+    }
+
+    #[cfg(windows)]
+    impl AppConfiguration {
+        fn save_to(&self, registry: &Registry) -> Result<(), ConfigurationError> {
+            ConfigurationUpdate::from(self).apply_to(registry)
         }
     }
 
@@ -2005,12 +2265,92 @@ mod tests {
             .write_string(ConfigurationRegistryKeys::Port, &"not a number".to_string())
             .unwrap();
 
-        assert!(AppConfiguration::write_missing_defaults(&test.registry).is_err());
+        AppConfiguration::write_missing_defaults(&test.registry).unwrap();
         assert_eq!(
             test.registry
                 .read_string(ConfigurationRegistryKeys::Port)
                 .unwrap(),
             "not a number"
+        );
+        assert!(AppConfiguration::fetch_from(&test.registry).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_update_replaces_an_invalid_value_and_leaves_the_rest() {
+        let test = TestRegistry::new("update-invalid-value");
+        let configuration = TestRegistry::custom_configuration();
+        configuration.save_to(&test.registry).unwrap();
+
+        test.registry
+            .write_string(ConfigurationRegistryKeys::Port, &"not a number".to_string())
+            .unwrap();
+        test.registry
+            .write_string(ConfigurationRegistryKeys::Secret, &String::new())
+            .unwrap();
+
+        let mut update = ConfigurationUpdate::default();
+        update.set_port(4321).unwrap();
+        update.set_secret("new secret".to_string()).unwrap();
+        update.apply_to(&test.registry).unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry).unwrap(),
+            AppConfiguration {
+                port_number: 4321,
+                secret: "new secret".to_string(),
+                ..configuration
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_registry_addresses_are_parsed_like_older_versions() {
+        let address = |ip: &str| ip.parse::<IpAddr>().unwrap();
+
+        assert_eq!(
+            parse_registry_addresses("10.0.1.100,,10.0.1.101"),
+            vec![address("10.0.1.100"), address("10.0.1.101")]
+        );
+        assert_eq!(
+            parse_registry_addresses("10.0.1.100; ::1"),
+            vec![address("10.0.1.100"), address("::1")]
+        );
+        // As a multi-string value is read
+        assert_eq!(
+            parse_registry_addresses("10.0.1.100\n::1"),
+            vec![address("10.0.1.100"), address("::1")]
+        );
+        assert_eq!(
+            parse_registry_addresses("localhost,10.0.1.0/24,10.0.1.100"),
+            vec![address("10.0.1.100")]
+        );
+        assert!(parse_registry_addresses("localhost").is_empty());
+        assert!(parse_registry_addresses("").is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_hand_edited_registry_addresses_do_not_stop_the_configuration_loading() {
+        let test = TestRegistry::new("hand-edited-addresses");
+        TestRegistry::custom_configuration()
+            .save_to(&test.registry)
+            .unwrap();
+
+        test.registry
+            .root_key
+            .set_value(
+                ConfigurationRegistryKeys::IpAddress,
+                &vec!["10.0.1.100", "localhost"],
+            )
+            .unwrap();
+
+        assert_eq!(
+            AppConfiguration::fetch_from(&test.registry)
+                .unwrap()
+                .addresses,
+            vec!["10.0.1.100".parse::<IpAddr>().unwrap()]
         );
     }
 }
