@@ -2,7 +2,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:fire="http://schemas.microsoft.com/wix/FirewallExtension" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
 	<!-- `ProductVersion` is passed in by `.github/commands/build-for-windows.ps1`, from Cargo.toml -->
 	<Product Id="*" Name="ShutdownOnLan" Language="1033" Version="$(var.ProductVersion)" Manufacturer="Jeremy Massel" UpgradeCode="755fa776-c302-4110-9be4-93578a393f09">
-		<!-- Windows Installer 5.0 is needed for `ServiceConfig` -->
+		<!-- Windows Installer 5.0 is needed for `ServiceConfig` and `ServiceConfigFailureActions` -->
 		<Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
 
 		<!-- Earlier installers were all versioned 1.0.0, regardless of the release, so allow "downgrading" to
@@ -49,13 +49,22 @@
 				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no">
 					<!-- Restart the service if it fails. The service stops itself with an error code when it can't
 					     listen, rather than crashing, so the restart has to apply to that too. -->
-					<util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
 					<ServiceConfig FailureActionsWhen="failedToStopOrReturnedError" OnInstall="yes" OnReinstall="yes" />
+					<!-- Rather than `util:ServiceConfig`, whose custom action leaves an empty
+					     `wix{ProductCode}.SchedServiceConfig.rmi` in C:\Windows\Installer after uninstalling -->
+					<ServiceConfigFailureActions OnInstall="yes" OnReinstall="yes" ResetPeriod="86400">
+						<Failure Action="restartService" Delay="5000" />
+						<Failure Action="restartService" Delay="5000" />
+						<Failure Action="restartService" Delay="5000" />
+					</ServiceConfigFailureActions>
 				</ServiceInstall>
 				<!-- The service logs to the Application event log. The executable contains the message resources. The
 				     name must match the event source in src/logging.rs -->
 				<util:EventSource Name="ShutdownOnLan" Log="Application" EventMessageFile="[#ShutdownOnLanExe]" SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
 				<ServiceControl Id="StopService" Stop="both" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+				<!-- 0.2.0's installer didn't create a service – `shutdown-on-lan.exe install` did, under another name.
+				     Upgrading removes that executable, so remove the service too, or Windows keeps trying to start it. -->
+				<ServiceControl Id="RemoveLegacyService" Stop="install" Remove="install" Name="shutdown-on-lan" Wait="yes" />
 			</Component>
 			<!-- Starts the service after installing it, unless an admin had disabled it -->
 			<Component Id="StartServiceComponent" Guid="a40e9761-2b85-418d-9df4-56f551922216" KeyPath="yes">
