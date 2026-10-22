@@ -153,12 +153,16 @@ foreach ($release in $Releases) {
     $exitCode = Invoke-Msiexec "/i `"$($legacyMsi.FullName)`"" "$version-install.log"
     if ($exitCode -ne 0) { throw "Installing $version failed with exit code $exitCode" }
 
+    $legacyExe = "${env:ProgramFiles(x86)}\ShutdownOnLan\shutdown-on-lan.exe"
     if ($version -eq '0.2.0') {
-        $legacyExe = Get-ChildItem "${env:ProgramFiles(x86)}\ShutdownOnLan", "$env:ProgramFiles\ShutdownOnLan" -Filter 'shutdown-on-lan.exe' -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $legacyExe) { throw "Unable to find the $version executable" }
-        & $legacyExe.FullName install
+        # Creates the service, and the default configuration
+        & $legacyExe install
         Start-Service $LegacyServiceName
+    } else {
+        # The 0.3.0 service doesn't create a missing configuration – it panics, so a new installation never
+        # starts. Any command creates it, as `install` did in 0.2.0.
+        & $legacyExe get --port
+        Start-Service $ServiceName
     }
 
     if (-not (Wait-ForListener)) {
