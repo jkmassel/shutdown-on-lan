@@ -1043,7 +1043,7 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).into_owned()
         };
 
-        // Windows may record the shutdown after `InitiateSystemShutdownExW` returns
+        // Windows may record the shutdown after `InitiateShutdownW` returns
         let mut event = newest_shutdown_event();
         for _ in 0..10 {
             if event.contains("10.0.1.50") {
