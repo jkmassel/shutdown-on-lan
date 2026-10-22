@@ -36,6 +36,10 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose -- --test-threads 1
+    # Schedules a shutdown of the runner, then cancels it before it happens
+    - name: Test the Windows shutdown event
+      if: runner.os == 'Windows'
+      run: cargo test --verbose -- --ignored --test-threads 1 test_windows_records_why_it_shut_down
     - uses: actions/setup-python@v7
       with:
         python-version: '3.x'
