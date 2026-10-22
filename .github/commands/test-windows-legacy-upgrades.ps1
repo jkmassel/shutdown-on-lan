@@ -153,15 +153,17 @@ foreach ($release in $Releases) {
     $exitCode = Invoke-Msiexec "/i `"$($legacyMsi.FullName)`"" "$version-install.log"
     if ($exitCode -ne 0) { throw "Installing $version failed with exit code $exitCode" }
 
-    $legacyExe = "${env:ProgramFiles(x86)}\ShutdownOnLan\shutdown-on-lan.exe"
     if ($version -eq '0.2.0') {
         # Creates the service, and the default configuration
-        & $legacyExe install
+        & "${env:ProgramFiles(x86)}\ShutdownOnLan\shutdown-on-lan.exe" install
         Start-Service $LegacyServiceName
     } else {
-        # The 0.3.0 service doesn't create a missing configuration – it panics, so a new installation never
-        # starts. Any command creates it, as `install` did in 0.2.0.
-        & $legacyExe get --port
+        # The 0.3.0 service panics if the configuration is missing, and nothing in 0.3.0 creates it – so this is
+        # its default configuration, as written by 0.2.0
+        $key = New-Item 'HKLM:\SOFTWARE\ShutdownOnLan' -Force
+        $key | New-ItemProperty -Name 'ip_addresses' -Value '127.0.0.1' | Out-Null
+        $key | New-ItemProperty -Name 'port' -Value $Port -PropertyType DWord | Out-Null
+        $key | New-ItemProperty -Name 'secret' -Value 'Super Secret String' | Out-Null
         Start-Service $ServiceName
     }
 
@@ -198,11 +200,14 @@ foreach ($release in $Releases) {
     try { Send-WrongSecret } catch { Check $false "Unable to connect after upgrading $version`: $_" }
 
     Write-Host '--- Uninstalling'
+    $productCode = @(Get-Registrations)[0].PSChildName
     $exitCode = Invoke-Msiexec "/x `"$Msi`"" "$version-uninstall.log"
     Check ($exitCode -eq 0) "Uninstalling after upgrading $version failed with exit code $exitCode"
     Check (-not (Get-Service $ServiceName, $LegacyServiceName -ErrorAction SilentlyContinue)) "Expected no service to be left after uninstalling"
     Check ((Get-ListeningProcessIds).Count -eq 0) "Expected nothing to be listening on port $Port after uninstalling"
     Check (@(Get-Registrations).Count -eq 0) "Expected nothing in Programs and Features after uninstalling"
+    $leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue)
+    Check ($leftovers.Count -eq 0) "Expected nothing to be left in $env:windir\Installer after uninstalling, but found: $($leftovers.Name -join ', ')"
     Write-Registrations
 }
 

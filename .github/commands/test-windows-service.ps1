@@ -259,6 +259,7 @@ if ($crashes.Count -gt 0) {
 }
 
 Write-Host '--- Uninstalling'
+$productCode = @(Get-InstalledProducts)[0].PSChildName
 $uninstall = Start-Process msiexec.exe -ArgumentList "/x `"$msi`" /qn /l*v msi-uninstall.log" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {
     Get-Content msi-uninstall.log -Tail 100
@@ -269,6 +270,11 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
 }
 if (Test-Path $EventSourceKey) {
     Fail 'Expected the event source to be removed after uninstall'
+}
+# WiX custom actions keep their rollback data in files named after the product code
+$leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue)
+if ($leftovers.Count -gt 0) {
+    Fail "Expected nothing to be left in $env:windir\Installer after uninstall, but found: $($leftovers.Name -join ', ')"
 }
 
 Write-Host 'All Windows service checks passed'
