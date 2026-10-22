@@ -4,14 +4,18 @@ Documentation=https://github.com/jkmassel/shutdown-on-lan
 After=network.target
 
 [Service]
+# Creates /etc/shutdown-on-lan.toml with a random secret, unless it already exists. It's created here, on the
+# service's first start, rather than when the package is installed, so that every machine cloned from an image
+# the package was installed in gets its own secret. `+` runs it outside the sandbox below, so it can write to
+# /etc.
+ExecStartPre=+/usr/bin/shutdown-on-lan init
 # The configuration is only read at startup – restart the service after changing it
 ExecStart=/usr/bin/shutdown-on-lan
 Restart=on-failure
 RestartSec=5
 
 # Runs as root, because shutting the machine down requires it. Everything else is locked down.
-# The configuration is only read by the service, so /etc stays read-only – if it's missing, create it
-# with `sudo shutdown-on-lan init` before starting the service.
+# The service only reads the configuration, so /etc stays read-only.
 # CAP_SYS_BOOT is only used if systemd can't be reached, and CAP_NET_BIND_SERVICE only if the port is
 # below 1024.
 CapabilityBoundingSet=CAP_SYS_BOOT CAP_NET_BIND_SERVICE

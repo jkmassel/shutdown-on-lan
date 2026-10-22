@@ -33,6 +33,7 @@ mkdir "$STAGING/shutdown-on-lan"
 cp "$BINARY" \
     build/linux/shutdown-on-lan.service \
     build/linux/firewalld/shutdown-on-lan.xml \
+    build/linux/sysctl/40-shutdown-on-lan.conf \
     README.md \
     LICENSE \
     "$STAGING/shutdown-on-lan/"

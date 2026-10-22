@@ -218,6 +218,26 @@ Wait-ForConnection
 if (-not (Test-Path $EventSourceKey)) { Fail 'Expected the event source to still be registered after upgrading' }
 $msi = $upgradeMsi
 
+Write-Host '--- Upgrading leaves a disabled service disabled'
+Set-Service $ServiceName -StartupType Disabled
+Stop-Service $ServiceName
+$afterNext = "$($current.Major).$($current.Minor).$($current.Build + 2)"
+& "$PSScriptRoot\build-for-windows.ps1" -Version $afterNext -Output 'UpgradeWhileDisabled.msi'
+$disabledMsi = Resolve-Path 'build\windows\UpgradeWhileDisabled.msi'
+$upgrade = Start-Process msiexec.exe -ArgumentList "/i `"$disabledMsi`" /qn /l*v msi-upgrade-disabled.log" -Wait -PassThru
+if ($upgrade.ExitCode -ne 0) {
+    Get-Content msi-upgrade-disabled.log -Tail 100
+    Fail "Upgrading a disabled service failed with exit code $($upgrade.ExitCode)"
+}
+$service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+if ($service.StartMode -ne 'Disabled' -or $service.State -ne 'Stopped') {
+    Fail "Expected the service to stay disabled and stopped, but it's $($service.StartMode) and $($service.State)"
+}
+Set-Service $ServiceName -StartupType Automatic
+Start-Service $ServiceName
+Wait-ForConnection
+$msi = $disabledMsi
+
 # The failure actions restart the service, which would otherwise hide a crash. A crash is event 7031
 # ("terminated unexpectedly"), or 7034 without failure actions. Stopping with a service-specific error, as
 # the service does above when it can't listen, is also logged as 7031 – but always alongside a 7024.

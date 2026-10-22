@@ -16,23 +16,26 @@ Installers are provided for Windows, macOS and Linux. Each installation generate
 Customizing the IP address field allows you to specify which interfaces the service will accept connections on, which is useful when the machine is connected to more than one network – this address should match that of the relevant interface. Multiple addresses can be provided as a comma-separated list, and both IPv4 and IPv6 addresses are supported. Connections arriving on any other interface are closed without being read. By default this is empty, which accepts connections on every interface. It's important that this IP address doesn't change – you should consider adding either a DHCP reservation or using a static address for this interface.
 
 ##### Allowed Sources
-Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect. As with the IP address, you should use a DHCP reservation or a static address for each client.
+Customizing the allowed sources field allows you to specify which clients can connect – for instance, the IP address of your control system. Multiple addresses can be provided as a comma-separated list. Connections from any other address are closed without being read. By default this is empty, which allows any client to connect (on Windows, the firewall rule the installer adds only allows the local subnet – see below). As with the IP address, you should use a DHCP reservation or a static address for each client.
 
 On macOS and Linux, this can be set with `shutdown-on-lan set --allowed-sources 10.0.1.50`. On Windows, it's the `allowed_sources` registry value.
 
 ##### Port
 Customizing the port field allows you to specify which port the service will listen on. By default, this is set to `53632`.
 
-##### Secret
-The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine!
+On Linux, the packages reserve the default port, so that the kernel never picks it as the local port of an outgoing connection – which would stop the service from starting – with `/usr/lib/sysctl.d/40-shutdown-on-lan.conf`. If you change the port, or reserve other ports with `net.ipv4.ip_local_reserved_ports` yourself, see that file.
 
-_The secret cannot be empty or longer than 4096 bytes._
+##### Secret
+The secret is the string that's sent to the machine in order to shut it down. Each installation generates its own random secret. To see it, run `sudo shutdown-on-lan get --secret` on macOS and Linux. On Windows, it's the `secret` registry value. If you change it, be sure to use a strong secret – anyone on the network with the port number and this secret can shut down your machine! On macOS and Linux, `shutdown-on-lan set --secret -` reads the new secret from standard input (for instance, `read -rs SECRET && echo "$SECRET" | sudo shutdown-on-lan set --secret -`), which keeps it out of the process list and `sudo`'s log – passing it as `--secret 'the secret'` puts it in both.
+
+_The secret can't be empty or longer than 4096 bytes, and can't start or end with whitespace or contain a line break._
 
 #### Windows
 1. Download the latest version of the application and run the installer.
 2. Windows may warn that this software is from an unknown author and provide a popup saying "Windows Protected your PC". Click "More Info" then "Run Anyway".
-3. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above. The key holds the secret, so only SYSTEM and Administrators can read it – run the Registry Editor as an administrator.
-4. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
+3. The installer adds a Windows Defender Firewall rule for the service that only allows connections from the local subnet – so on Windows, clients on other subnets can't connect even when the allowed sources are empty. To allow them, widen the scope of the `ShutdownOnLan` inbound rule in Windows Defender Firewall with Advanced Security. An upgrade replaces the rule, so widen it again after upgrading.
+4. Once the installer has finished, you can configure the service directly in the Registry – all of the configuration settings are in `HKEY_LOCAL_MACHINE\SOFTWARE\ShutdownOnLan`. See details on each setting above. The key holds the secret, so only SYSTEM and Administrators can read it – run the Registry Editor as an administrator.
+5. Once settings are in place, restart the `ShutdownOnLan` service. If the service stops unexpectedly, Windows restarts it after 5 seconds.
 
 #### Mac
 1. Download the latest version of the application and run the installer. It runs on both Apple silicon and Intel Macs.
@@ -95,17 +98,25 @@ sudo firewall-cmd --reload
 - **ufw:** change it in `/etc/ufw/applications.d/shutdown-on-lan`, which upgrades never overwrite.
 
 ##### Other distributions
-The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit and the firewall profiles:
+The `.tar.gz` contains a statically linked binary that runs on any distribution, along with the `systemd` unit, the firewall profiles, and the file that reserves the default port:
 
 ```
 tar -xzf shutdown-on-lan-linux-x86_64.tar.gz && cd shutdown-on-lan
 sudo install -m 755 shutdown-on-lan /usr/bin/
-sudo shutdown-on-lan init
 sudo install -m 644 shutdown-on-lan.service /etc/systemd/system/
+sudo install -m 644 40-shutdown-on-lan.conf /etc/sysctl.d/ && sudo sysctl --system
 sudo systemctl daemon-reload && sudo systemctl enable --now shutdown-on-lan
 ```
 
-The service can't write to `/etc`, so `shutdown-on-lan init` creates `/etc/shutdown-on-lan.toml` (with a random secret) before it starts.
+The service creates `/etc/shutdown-on-lan.toml`, with a random secret, when it first starts.
+
+#### Cloned machines and images
+Every installation generates its own secret, so that knowing one machine's secret doesn't let anyone shut down the others. On Linux, the service generates it when it first starts, so each machine cloned from an image the package was installed in (without the service having started) gets its own. On macOS and Windows – and on Linux, once the service has started – the secret already exists, and every clone shares it. To give a clone its own secret:
+
+- **macOS and Linux:** `openssl rand -hex 16 | sudo shutdown-on-lan set --secret -`, then restart the service.
+- **Windows:** in an administrative PowerShell, `Remove-ItemProperty HKLM:\SOFTWARE\ShutdownOnLan -Name secret; Restart-Service ShutdownOnLan` – the service generates a new one when it starts.
+
+Either way, give the new secret to your control system. When building an image on Linux, you can instead delete `/etc/shutdown-on-lan.toml` before capturing it.
 
 ### How to use
 

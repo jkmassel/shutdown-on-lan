@@ -115,6 +115,14 @@ check "Settings changed with \`defaults\` are read"
 defaults write "$PREFERENCES" port_number -int 54322
 expect_output "$("$BINARY" get --port 2>&1)" "Current Port: 54322"
 
+check "Settings written to root's own domain, rather than the system one, are ignored with a warning"
+# Names the domain rather than the plist's path, so as root it writes to /var/root/Library/Preferences
+defaults write "$DOMAIN" port_number -int 54323
+output=$("$BINARY" get --port 2>&1)
+expect_output "$output" "Current Port: 54322"
+expect_output "$output" "Ignoring port_number in root's own preferences"
+defaults delete "$DOMAIN"
+
 check "A secret written with \`defaults\` is moved to the secret file"
 defaults write "$PREFERENCES" secret "written-with-defaults"
 expect_output "$("$BINARY" get --secret 2>&1)" "Secret: written-with-defaults"

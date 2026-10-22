@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """End-to-end checks for the listener, run against a debug build in CI.
 
-These only ever send *wrong* secrets – the real one would shut the machine down.
+These only ever send *wrong* secrets – the real one would shut the machine down. The machine's configuration is
+saved first, and restored afterwards.
 
 On macOS and Linux this must run as root, because the configuration lives in the system-wide preferences
 domain and /etc respectively. On Windows it must run as an administrator, because the configuration lives in
 HKEY_LOCAL_MACHINE.
 """
 
+import atexit
+import errno
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -25,6 +29,11 @@ SECRET = "correct-horse-" + secrets.token_hex(16)
 
 ENV = dict(os.environ)
 
+LINUX_CONFIGURATION = Path("/etc/shutdown-on-lan.toml")
+MACOS_PREFERENCES = "/Library/Preferences/com.jkmassel.shutdownonlan"
+MACOS_SECRET = Path("/Library/Application Support/ShutdownOnLan/secret")
+WINDOWS_KEY = r"HKLM\SOFTWARE\ShutdownOnLan"
+
 logs = []
 
 
@@ -35,9 +44,9 @@ def fail(message, output=""):
     sys.exit(1)
 
 
-def cli(*args, expect_success=True):
+def cli(*args, expect_success=True, input=None):
     result = subprocess.run(
-        [str(BINARY), *args], cwd=WORKDIR, env=ENV, capture_output=True, text=True
+        [str(BINARY), *args], cwd=WORKDIR, env=ENV, capture_output=True, text=True, input=input
     )
     output = result.stdout + result.stderr
     logs.append(output)
@@ -46,6 +55,56 @@ def cli(*args, expect_success=True):
         fail(f"`{' '.join(args)}` exited with {result.returncode}", output)
 
     return output
+
+
+def run(*args):
+    return subprocess.run(args, capture_output=True, text=True)
+
+
+def save_file(path):
+    """Returns a function that puts `path` back as it is now – including removing it, if it doesn't exist."""
+    backup = WORKDIR / f"{path.name}.original"
+    existed = path.exists()
+    if existed:
+        shutil.copy2(path, backup)
+
+    def restore():
+        if existed:
+            shutil.copy2(backup, path)
+        else:
+            path.unlink(missing_ok=True)
+
+    return restore
+
+
+def save_configuration():
+    """Saves the machine's configuration, and restores it when the checks finish, however they finish."""
+    if sys.platform == "win32":
+        backup = WORKDIR / "configuration.reg"
+        existed = run("reg", "export", WINDOWS_KEY, str(backup), "/y").returncode == 0
+
+        def restore():
+            run("reg", "delete", WINDOWS_KEY, "/f")
+            if existed:
+                run("reg", "import", str(backup))
+                # Importing doesn't restore the key's permissions, which `init` restricts again
+                run(str(BINARY), "init")
+    elif sys.platform == "darwin":
+        backup = WORKDIR / "preferences.plist"
+        # Through cfprefsd, which the file on disk can lag behind
+        existed = run("defaults", "export", MACOS_PREFERENCES, str(backup)).returncode == 0
+        restore_secret = save_file(MACOS_SECRET)
+
+        def restore():
+            if existed:
+                run("defaults", "import", MACOS_PREFERENCES, str(backup))
+            else:
+                run("defaults", "delete", MACOS_PREFERENCES)
+            restore_secret()
+    else:
+        restore = save_file(LINUX_CONFIGURATION)
+
+    atexit.register(restore)
 
 
 class Listener:
@@ -95,9 +154,12 @@ def send(message, host="127.0.0.1"):
             connection.shutdown(socket.SHUT_WR)
             while connection.recv(1024):
                 pass
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-            # Expected when the listener closes a connection without reading all of it
-            pass
+        except OSError as error:
+            # Expected when the listener closes a connection without reading all of it – `shutdown` fails with
+            # ENOTCONN if it's already closed completely
+            closed = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+            if not isinstance(error, closed) and error.errno != errno.ENOTCONN:
+                raise
 
     return time.monotonic() - start
 
@@ -118,6 +180,8 @@ def check(name):
     print(f"--- {name}")
 
 
+save_configuration()
+
 check("`set` rejects invalid values")
 cli("set", "--ip-address", "10.0.0.300", expect_success=False)
 cli("set", "--secret", "", expect_success=False)
@@ -135,6 +199,13 @@ output = cli("get", "--port", "--ip-addresses", "--allowed-sources")
 for expected in (f"Current Port: {PORT}", "Listening IP Addresses: 127.0.0.1", "Allowed Sources: 192.0.2.1"):
     if expected not in output:
         fail(f"`get` output is missing {expected!r}", output)
+
+check("`set --secret -` reads the secret from standard input")
+cli("set", "--secret", "-", input="from-standard-input\n")
+output = cli("get", "--secret")
+if "Secret: from-standard-input" not in output:
+    fail("`set --secret -` didn't set the secret from standard input", output)
+cli("set", "--secret", SECRET)
 
 check("Clients not in `allowed_sources` are rejected")
 with Listener() as listener:

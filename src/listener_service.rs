@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -413,14 +413,10 @@ impl ConnectionSlots {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OpenConnections> {
-        self.open.lock().unwrap_or_else(|error| error.into_inner())
-    }
-
     /// Takes a slot for a connection from `peer`, which is released when the returned value is dropped.
     fn acquire(slots: &Arc<ConnectionSlots>, peer: IpAddr) -> Result<ConnectionSlot, SlotError> {
         let source = source_of(peer);
-        let mut open = slots.lock();
+        let mut open = lock(&slots.open);
 
         if open.by_source.get(&source).copied().unwrap_or(0) >= slots.per_source_limit {
             return Err(SlotError::TooManyConnectionsFromSource);
@@ -447,7 +443,7 @@ struct ConnectionSlot {
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
-        let mut open = self.slots.lock();
+        let mut open = lock(&self.slots.open);
         open.total -= 1;
 
         if let Some(count) = open.by_source.get_mut(&self.source) {
@@ -516,7 +512,7 @@ impl RejectionLog {
     /// out since the last one that was logged.
     fn should_log(&self, peer: IpAddr, now: Instant) -> Option<u64> {
         let source = source_of(peer);
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = lock(&self.state);
 
         if now.duration_since(state.interval_start) >= self.interval {
             state.interval_start = now;
@@ -692,10 +688,7 @@ impl Throttle {
     /// Reserves the next attempt slot for `source`, returning how long to wait before using it.
     fn reserve_attempt(&self, peer: IpAddr, now: Instant) -> Duration {
         let source = source_of(peer);
-        let mut sources = self
-            .sources
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut sources = lock(&self.sources);
 
         sources.retain(|_, state| now < state.next_attempt + FORGET_SOURCE_AFTER);
 
@@ -712,10 +705,7 @@ impl Throttle {
 
     fn record_failure(&self, peer: IpAddr) {
         let source = source_of(peer);
-        let mut sources = self
-            .sources
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut sources = lock(&self.sources);
 
         if let Some(state) = sources.get_mut(&source) {
             state.failures = state.failures.saturating_add(1);
@@ -733,6 +723,12 @@ impl Throttle {
             .saturating_mul(multiplier)
             .min(self.max_delay)
     }
+}
+
+/// Locks `mutex`, even if a thread panicked while holding it. Every value these protect is only changed in
+/// ways that leave it consistent, so the service carries on rather than panicking too.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 /// Compares in constant time (for a given length) so the secret can't be recovered through timing.
@@ -853,6 +849,21 @@ mod tests {
     #[test]
     fn test_secret_on_a_later_line_matches() {
         assert!(wait_for(b"wrong\nSuper Secret String\n").unwrap());
+    }
+
+    #[test]
+    fn test_secret_with_inner_whitespace_matches() {
+        let secret = "inner space\rand return";
+        let input = format!("{secret}\r\n");
+        assert!(
+            wait_for_secret(
+                Cursor::new(input.into_bytes()),
+                secret,
+                &unthrottled(),
+                source()
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -977,7 +988,7 @@ mod tests {
         let slots = slots();
         drop(ConnectionSlots::acquire(&slots, source()).unwrap());
 
-        let open = slots.lock();
+        let open = lock(&slots.open);
         assert_eq!(open.total, 0);
         assert!(open.by_source.is_empty());
     }
