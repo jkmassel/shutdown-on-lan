@@ -1,4 +1,4 @@
-# Installs each earlier release's Windows installer, upgrades it with the MSI built by build-for-windows.ps1, and
+# Installs each earlier release's Windows MSI, upgrades it with the MSI built by build-for-windows.ps1, and
 # checks that nothing from the earlier installation is left behind. Must run as an administrator, on a machine
 # without ShutdownOnLan installed. Only ever sends a *wrong* secret – the real one would shut the machine down.
 
@@ -116,14 +116,21 @@ foreach ($release in $Releases) {
     if ($download.EndsWith('.zip')) {
         Expand-Archive $download -DestinationPath $directory -Force
     }
-    $installer = Get-ChildItem $directory -Filter '*.exe' | Select-Object -First 1
+    $bundle = Get-ChildItem $directory -Filter '*.exe' | Select-Object -First 1
+
+    # The bundle can't be installed here: its Visual C++ 2015 Redistributable exits with 1638 when a newer one is
+    # installed, which the bundle treats as a failure. Install the MSI it contains instead – that's what registers
+    # the product and the service.
+    $extracted = Join-Path $directory 'extracted'
+    & "$env:WIX\bin\dark.exe" -nologo -x $extracted $bundle.FullName (Join-Path $directory 'bundle.wxs') | Out-Host
+    $legacyMsi = Get-ChildItem $extracted -Recurse -File |
+        Where-Object { $_.Length -gt 8 -and -not (Compare-Object ([System.IO.File]::ReadAllBytes($_.FullName)[0..3]) ([byte[]](0xD0, 0xCF, 0x11, 0xE0))) } |
+        Select-Object -First 1
+    if (-not $legacyMsi) { throw "Unable to find the MSI in the $version bundle" }
 
     Write-Host "--- Installing $version"
-    $process = Start-Process $installer.FullName -ArgumentList "/quiet /norestart /log `"$version-install.log`"" -Wait -PassThru
-    if ($process.ExitCode -notin 0, 3010) {
-        Get-ChildItem "$version-install*.log" | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_ -Tail 60 }
-        throw "Installing $version failed with exit code $($process.ExitCode)"
-    }
+    $exitCode = Invoke-Msiexec "/i `"$($legacyMsi.FullName)`"" "$version-install.log"
+    if ($exitCode -ne 0) { throw "Installing $version failed with exit code $exitCode" }
 
     if ($version -eq '0.2.0') {
         $legacyExe = Get-ChildItem "${env:ProgramFiles(x86)}\ShutdownOnLan", "$env:ProgramFiles\ShutdownOnLan" -Filter 'shutdown-on-lan.exe' -ErrorAction SilentlyContinue |
