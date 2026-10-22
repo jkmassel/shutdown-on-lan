@@ -214,7 +214,8 @@ foreach ($release in $Releases) {
     Check (-not (Get-Service $ServiceName, $LegacyServiceName -ErrorAction SilentlyContinue)) "Expected no service to be left after uninstalling"
     Check ((Get-ListeningProcessIds).Count -eq 0) "Expected nothing to be listening on port $Port after uninstalling"
     Check (@(Get-Registrations).Count -eq 0) "Expected nothing in Programs and Features after uninstalling"
-    $leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue)
+    # As in test-windows-service.ps1, WiX never deletes `util:ServiceConfig`'s rollback data
+    $leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue | Where-Object Name -notlike '*.SchedServiceConfig.rmi')
     Check ($leftovers.Count -eq 0) "Expected nothing to be left in $env:windir\Installer after uninstalling, but found: $($leftovers.Name -join ', ')"
     Write-Registrations
 }

@@ -23,16 +23,8 @@
 		<!-- Upgrading recreates the service as automatic, so disable it again if it was disabled -->
 		<SetProperty Id="KeepServiceDisabled" Value="&quot;[System64Folder]sc.exe&quot; config ShutdownOnLan start= disabled" Before="KeepServiceDisabled" Sequence="execute" />
 		<CustomAction Id="KeepServiceDisabled" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
-
-		<!-- Restart the service 5 seconds after it fails, every time. `util:ServiceConfig` leaves an empty
-		     `wix{ProductCode}.SchedServiceConfig.rmi` in C:\Windows\Installer after uninstalling, and Windows
-		     Installer's own `ServiceConfigFailureActions` fails with error 1939 (access denied) for a restart action. -->
-		<SetProperty Id="ConfigureServiceRestart" Value="&quot;[System64Folder]sc.exe&quot; failure ShutdownOnLan reset= 86400 actions= restart/5000/restart/5000/restart/5000" Before="ConfigureServiceRestart" Sequence="execute" />
-		<CustomAction Id="ConfigureServiceRestart" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
-
 		<InstallExecuteSequence>
 			<Custom Action="KeepServiceDisabled" After="InstallServices">PREVIOUS_SERVICE_START_TYPE = "#4" AND NOT REMOVE~="ALL"</Custom>
-			<Custom Action="ConfigureServiceRestart" After="InstallServices">NOT REMOVE~="ALL"</Custom>
 		</InstallExecuteSequence>
 
 		<Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
@@ -55,8 +47,9 @@
 				</File>
 				<!-- The name must match `SERVICE_NAME` in src/windows_listener_service.rs -->
 				<ServiceInstall Type="ownProcess" Vital="yes" Name="ShutdownOnLan" DisplayName="ShutdownOnLan" Description="Shuts down the computer in response to an external signal." Start="auto" Account="LocalSystem" ErrorControl="normal" Interactive="no">
-					<!-- `ConfigureServiceRestart` restarts the service if it fails. The service stops itself with an error
-					     code when it can't listen, rather than crashing, so the restart has to apply to that too. -->
+					<!-- Restart the service if it fails. The service stops itself with an error code when it can't
+					     listen, rather than crashing, so the restart has to apply to that too. -->
+					<util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
 					<ServiceConfig FailureActionsWhen="failedToStopOrReturnedError" OnInstall="yes" OnReinstall="yes" />
 				</ServiceInstall>
 				<!-- The service logs to the Application event log. The executable contains the message resources. The

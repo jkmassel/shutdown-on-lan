@@ -280,8 +280,9 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
 if (Test-Path $EventSourceKey) {
     Fail 'Expected the event source to be removed after uninstall'
 }
-# WiX custom actions keep their rollback data in files named after the product code
-$leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue)
+# WiX custom actions keep their rollback data in files named after the product code. Ignore the one from
+# `util:ServiceConfig`: WiX never deletes it after a successful install, in any version.
+$leftovers = @(Get-ChildItem "$env:windir\Installer" -Filter "*$productCode*" -ErrorAction SilentlyContinue | Where-Object Name -notlike '*.SchedServiceConfig.rmi')
 if ($leftovers.Count -gt 0) {
     Fail "Expected nothing to be left in $env:windir\Installer after uninstall, but found: $($leftovers.Name -join ', ')"
 }
