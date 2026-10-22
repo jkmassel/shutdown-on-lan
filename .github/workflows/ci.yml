@@ -124,6 +124,9 @@ jobs:
       - name: Test Windows service
         shell: pwsh
         run: .github/commands/test-windows-service.ps1
+      - name: Test upgrading earlier releases
+        shell: pwsh
+        run: .github/commands/test-windows-legacy-upgrades.ps1
       - uses: actions/upload-artifact@v7
         with:
           name: shutdown-on-lan-windows
