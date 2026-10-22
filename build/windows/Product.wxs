@@ -56,6 +56,9 @@
 				     name must match the event source in src/logging.rs -->
 				<util:EventSource Name="ShutdownOnLan" Log="Application" EventMessageFile="[#ShutdownOnLanExe]" SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
 				<ServiceControl Id="StopService" Stop="both" Remove="uninstall" Name="ShutdownOnLan" Wait="yes" />
+				<!-- 0.2.0's installer didn't create a service – `shutdown-on-lan.exe install` did, under another name.
+				     Upgrading removes that executable, so remove the service too, or Windows keeps trying to start it. -->
+				<ServiceControl Id="RemoveLegacyService" Stop="install" Remove="install" Name="shutdown-on-lan" Wait="yes" />
 			</Component>
 			<!-- Starts the service after installing it, unless an admin had disabled it -->
 			<Component Id="StartServiceComponent" Guid="a40e9761-2b85-418d-9df4-56f551922216" KeyPath="yes">
