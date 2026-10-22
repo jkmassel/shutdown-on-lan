@@ -48,6 +48,26 @@ function Write-Registrations {
     }
 }
 
+function Write-Diagnostics {
+    Write-Host '--- Services'
+    Get-CimInstance Win32_Service | Where-Object { $_.Name -in $ServiceName, $LegacyServiceName } | ForEach-Object {
+        $exe = ($_.PathName -replace '^"([^"]+)".*$', '$1')
+        Write-Host "$($_.Name): $($_.State), $($_.StartMode), exit code $($_.ExitCode) / $($_.ServiceSpecificExitCode), $($_.PathName) (exists: $(Test-Path $exe))"
+    }
+    Write-Host "--- Listening on port $Port"
+    Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host "$($_.LocalAddress):$($_.LocalPort), PID $($_.OwningProcess) $((Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).Path)" }
+    Write-Host '--- Service control manager events'
+    Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $script:ReleaseStart } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match 'shutdown' } |
+        Sort-Object TimeCreated |
+        ForEach-Object { Write-Host "$($_.TimeCreated) $($_.Id): $($_.Message)" }
+    Write-Host '--- Application errors'
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $script:ReleaseStart; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
+        Sort-Object TimeCreated |
+        ForEach-Object { Write-Host "$($_.TimeCreated) $($_.ProviderName): $($_.Message)" }
+}
+
 function Get-ListeningProcessIds {
     @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | ForEach-Object OwningProcess | Sort-Object -Unique)
 }
@@ -106,6 +126,7 @@ foreach ($release in $Releases) {
     Write-Host "=== Upgrading from $version"
 
     Clear-Machine
+    $script:ReleaseStart = Get-Date
 
     $directory = Join-Path $env:RUNNER_TEMP "shutdown-on-lan-$version"
     New-Item -ItemType Directory -Force $directory | Out-Null
@@ -140,7 +161,10 @@ foreach ($release in $Releases) {
         Start-Service $LegacyServiceName
     }
 
-    if (-not (Wait-ForListener)) { throw "$version isn't listening on port $Port" }
+    if (-not (Wait-ForListener)) {
+        Write-Diagnostics
+        throw "$version isn't listening on port $Port"
+    }
     Write-Host "Installed $version, registered as:"
     Write-Registrations
 
@@ -150,6 +174,7 @@ foreach ($release in $Releases) {
 
     Write-Host 'Registered as:'
     Write-Registrations
+    Write-Diagnostics
     $registrations = @(Get-Registrations)
     Check ($registrations.Count -eq 1 -and -not $registrations[0].BundleUpgradeCode) "Expected only the new MSI in Programs and Features after upgrading $version"
 
