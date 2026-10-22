@@ -114,10 +114,18 @@ function Clear-Machine {
     Remove-Item 'HKLM:\SOFTWARE\ShutdownOnLan' -Recurse -ErrorAction SilentlyContinue
 }
 
+# The failing action is logged with "Return value 3", well before the end of the log
+function Write-MsiLog([string] $Log) {
+    Select-String -Path $Log -Pattern 'Return value 3' -Context 40, 0 | Select-Object -First 1 | ForEach-Object {
+        $_.Context.PreContext + $_.Line
+    } | Out-Host
+    Write-Host '--- End of the log'
+    Get-Content $Log -Tail 40 | Out-Host
+}
+
 function Invoke-Msiexec([string] $Arguments, [string] $Log) {
     $process = Start-Process msiexec.exe -ArgumentList "$Arguments /qn /l*v $Log" -Wait -PassThru
-    # Out-Host, so that the log isn't returned along with the exit code
-    if ($process.ExitCode -ne 0) { Get-Content $Log -Tail 100 | Out-Host }
+    if ($process.ExitCode -ne 0) { Write-MsiLog $Log }
     return $process.ExitCode
 }
 

@@ -98,6 +98,15 @@ function Get-InstalledProducts {
         Where-Object DisplayName -eq 'ShutdownOnLan'
 }
 
+# The failing action is logged with "Return value 3", well before the end of the log
+function Write-MsiLog([string] $Log) {
+    Select-String -Path $Log -Pattern 'Return value 3' -Context 40, 0 | Select-Object -First 1 | ForEach-Object {
+        $_.Context.PreContext + $_.Line
+    } | Out-Host
+    Write-Host '--- End of the log'
+    Get-Content $Log -Tail 40 | Out-Host
+}
+
 function Send-WrongSecret {
     $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $Port)
     try {
@@ -118,7 +127,7 @@ Write-Host '--- Installing'
 $msi = Resolve-Path 'build\windows\Product.msi'
 $install = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /l*v msi-install.log" -Wait -PassThru
 if ($install.ExitCode -ne 0) {
-    Get-Content msi-install.log -Tail 100
+    Write-MsiLog msi-install.log
     Fail "Installing the MSI failed with exit code $($install.ExitCode)"
 }
 
@@ -202,7 +211,7 @@ $next = "$($current.Major).$($current.Minor).$($current.Build + 1)"
 $upgradeMsi = Resolve-Path 'build\windows\Upgrade.msi'
 $upgrade = Start-Process msiexec.exe -ArgumentList "/i `"$upgradeMsi`" /qn /l*v msi-upgrade.log" -Wait -PassThru
 if ($upgrade.ExitCode -ne 0) {
-    Get-Content msi-upgrade.log -Tail 100
+    Write-MsiLog msi-upgrade.log
     Fail "Upgrading failed with exit code $($upgrade.ExitCode)"
 }
 
@@ -226,7 +235,7 @@ $afterNext = "$($current.Major).$($current.Minor).$($current.Build + 2)"
 $disabledMsi = Resolve-Path 'build\windows\UpgradeWhileDisabled.msi'
 $upgrade = Start-Process msiexec.exe -ArgumentList "/i `"$disabledMsi`" /qn /l*v msi-upgrade-disabled.log" -Wait -PassThru
 if ($upgrade.ExitCode -ne 0) {
-    Get-Content msi-upgrade-disabled.log -Tail 100
+    Write-MsiLog msi-upgrade-disabled.log
     Fail "Upgrading a disabled service failed with exit code $($upgrade.ExitCode)"
 }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
@@ -262,7 +271,7 @@ Write-Host '--- Uninstalling'
 $productCode = @(Get-InstalledProducts)[0].PSChildName
 $uninstall = Start-Process msiexec.exe -ArgumentList "/x `"$msi`" /qn /l*v msi-uninstall.log" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {
-    Get-Content msi-uninstall.log -Tail 100
+    Write-MsiLog msi-uninstall.log
     Fail "Uninstalling the MSI failed with exit code $($uninstall.ExitCode)"
 }
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
