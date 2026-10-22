@@ -29,13 +29,20 @@ fi
 echo "$output" | grep -q 'try again with sudo'
 
 echo "--- Shutting down works from inside the service's sandbox"
-# `shutdown` asks systemd to power off, so check that the sandbox can still reach it. Only the unit's
-# own settings are used, not any drop-ins.
+# Shutting down asks systemd to start `poweroff.target`, so check that the sandbox can still start a unit.
+# Only the unit's own settings are used, not any drop-ins.
+cat > /run/systemd/system/shutdown-on-lan-sandbox-check.service <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/touch /run/shutdown-on-lan-sandbox-check
+EOF
+systemctl daemon-reload
 properties=()
 while IFS= read -r line; do
     properties+=(-p "$line")
 done < <(grep -E '^(Capability|NoNewPrivileges|Protect|Private|Restrict|Lock|Memory|SystemCall)' "$UNIT")
-systemd-run --wait --pipe --collect "${properties[@]}" systemctl show --property=Version
+systemd-run --wait --pipe --collect "${properties[@]}" systemctl start shutdown-on-lan-sandbox-check.service
+test -f /run/shutdown-on-lan-sandbox-check
 
 echo "--- A wrong secret sent over the network is rejected"
 address="$(hostname -I | awk '{print $1}')"

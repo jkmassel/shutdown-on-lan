@@ -1,7 +1,7 @@
 # shutdown-on-lan
 A cross-platform lightweight complement to wake on lan.
 
-Allows shutting down a computer remotely with a single TCP packet via external control systems (for instance AMX controllers). 
+Allows shutting down a computer remotely with a single TCP packet via external control systems (for instance AMX controllers). Apps can't stop the shutdown, so any unsaved changes in them are lost.
 
 **Supported Platforms:**
 - Windows

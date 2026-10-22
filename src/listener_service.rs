@@ -574,7 +574,7 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
         Ok(true) => {
             log::info!(peer_addr:% = peer.ip(); "Shutting down - source: {}", peer);
 
-            if let Err(error) = shut_down() {
+            if let Err(error) = shut_down(peer.ip()) {
                 log::error!("Failed to shut down: {}", error);
             }
         }
@@ -585,25 +585,15 @@ fn handle_stream(stream: TcpStream, secret: &str, throttle: &Throttle, peer: Soc
     }
 }
 
-/// Shuts the machine down.
+/// Shuts the machine down, even if apps don't want it to – they lose any unsaved changes.
 ///
-/// On macOS this runs `shutdown` rather than using `system_shutdown`, which asks System Events to shut down
-/// over AppleScript. The service is a root LaunchDaemon, so there's no GUI session to answer the Automation
+/// This runs `shutdown` rather than using `system_shutdown`, which asks System Events to shut down over
+/// AppleScript. The service is a root LaunchDaemon, so there's no GUI session to answer the Automation
 /// permission prompt that needs (at the login window, there's no session at all), and apps can cancel that
 /// kind of shutdown anyway.
 #[cfg(target_os = "macos")]
-fn shut_down() -> io::Result<()> {
-    let output = shutdown_command().output()?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "`shutdown` exited with {} – {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
-    }
+fn shut_down(_requested_by: IpAddr) -> io::Result<()> {
+    run_command(&mut shutdown_command())
 }
 
 #[cfg(target_os = "macos")]
@@ -613,9 +603,180 @@ fn shutdown_command() -> std::process::Command {
     command
 }
 
-#[cfg(not(target_os = "macos"))]
-fn shut_down() -> io::Result<()> {
-    system_shutdown::shutdown()
+/// How long to wait for logind to shut down before doing it directly – see `shut_down`
+#[cfg(target_os = "linux")]
+const FORCE_SHUTDOWN_AFTER: Duration = Duration::from_secs(10);
+
+/// Shuts the machine down, even if apps don't want it to – they lose any unsaved changes.
+///
+/// This asks logind first, which warns apps and gives them a few seconds to get ready. `-i` overrides the
+/// inhibitor locks apps take to block shutting down, but newer versions of systemd only let root do that
+/// with a polkit rule. So if logind refuses, or the machine is still running `FORCE_SHUTDOWN_AFTER` later,
+/// this starts `poweroff.target` directly – which is what logind does once it's checked those locks.
+/// Services still stop in order either way.
+///
+/// It doesn't use `system_shutdown`, which asks desktop session managers such as GNOME's first, and they
+/// let apps cancel it.
+#[cfg(target_os = "linux")]
+fn shut_down(_requested_by: IpAddr) -> io::Result<()> {
+    let deadline = Instant::now() + FORCE_SHUTDOWN_AFTER;
+
+    match run_command(&mut logind_shutdown_command()) {
+        Ok(()) => {
+            // Shutting down stops this service, so if it's still running, something is holding it up
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            log::warn!(
+                "Still running {} seconds after asking logind to shut down, so starting poweroff.target directly",
+                FORCE_SHUTDOWN_AFTER.as_secs()
+            );
+        }
+        Err(error) => {
+            log::warn!("logind didn't shut down, so starting poweroff.target directly – {error}")
+        }
+    }
+
+    run_command(&mut forced_shutdown_command())
+}
+
+#[cfg(target_os = "linux")]
+fn logind_shutdown_command() -> std::process::Command {
+    let mut command = std::process::Command::new("systemctl");
+    command.args(["poweroff", "-i"]);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn forced_shutdown_command() -> std::process::Command {
+    let mut command = std::process::Command::new("systemctl");
+    command.args([
+        "start",
+        "poweroff.target",
+        "--job-mode=replace-irreversibly",
+        "--no-block",
+    ]);
+    command
+}
+
+/// Runs `command`, failing with what it wrote to standard error if it doesn't succeed.
+#[cfg(unix)]
+fn run_command(command: &mut std::process::Command) -> io::Result<()> {
+    let output = command.output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "`{}` exited with {} – {}",
+            command.get_program().to_string_lossy(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+/// Shuts the machine down, even if apps don't want it to – they're closed, and every signed-in user is
+/// signed out, so they lose any unsaved changes.
+///
+/// This calls `InitiateShutdownW` rather than using `system_shutdown`, which calls `ExitWindowsEx`. That
+/// can't take a comment, lets apps hold the shutdown up, and – with the reason `system_shutdown` gives –
+/// says in the System event log that an update caused the shutdown. Microsoft's docs also warn that
+/// `ExitWindowsEx` may not shut down the machine when the caller isn't the signed-in user, like a service.
+#[cfg(windows)]
+fn shut_down(requested_by: IpAddr) -> io::Result<()> {
+    initiate_shutdown(requested_by, 0)
+}
+
+/// Starts shutting down in `timeout_seconds`. The System event log's record of it (event 1074) gives the
+/// reason "Other (Planned)", and a comment naming `requested_by`.
+///
+/// With a timeout of 0 the shutdown starts immediately – replacing any that's scheduled for later – and
+/// can't be cancelled. Otherwise Windows shows a countdown, and `AbortSystemShutdownW` can cancel it,
+/// which is how it's tested.
+#[cfg(windows)]
+fn initiate_shutdown(requested_by: IpAddr, timeout_seconds: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Shutdown::{
+        InitiateShutdownW, SHTDN_REASON_FLAG_PLANNED, SHTDN_REASON_MAJOR_OTHER,
+        SHTDN_REASON_MINOR_OTHER, SHUTDOWN_FORCE_OTHERS, SHUTDOWN_FORCE_SELF,
+        SHUTDOWN_GRACE_OVERRIDE, SHUTDOWN_POWEROFF,
+    };
+
+    enable_shutdown_privilege()?;
+
+    let comment: Vec<u16> = format!("Requested over the network by {requested_by}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let reason = SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED;
+    // Without `SHUTDOWN_FORCE_OTHERS`, it fails whenever anyone is signed in
+    let mut flags = SHUTDOWN_POWEROFF | SHUTDOWN_FORCE_OTHERS | SHUTDOWN_FORCE_SELF;
+    // Windows rejects this alongside a timeout
+    if timeout_seconds == 0 {
+        flags |= SHUTDOWN_GRACE_OVERRIDE;
+    }
+
+    match unsafe {
+        InitiateShutdownW(
+            std::ptr::null(),
+            comment.as_ptr(),
+            timeout_seconds,
+            flags,
+            reason,
+        )
+    } {
+        ERROR_SUCCESS => Ok(()),
+        error => Err(io::Error::from_raw_os_error(error as i32)),
+    }
+}
+
+/// Enables `SeShutdownPrivilege`, which `InitiateShutdownW` needs. LocalSystem holds it, but it starts
+/// out disabled.
+#[cfg(windows)]
+fn enable_shutdown_privilege() -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NOT_ALL_ASSIGNED, HANDLE};
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+        SE_SHUTDOWN_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut privileges = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Attributes: SE_PRIVILEGE_ENABLED,
+            ..Default::default()
+        }],
+    };
+    let luid = &mut privileges.Privileges[0].Luid;
+    if unsafe { LookupPrivilegeValueW(std::ptr::null(), SE_SHUTDOWN_NAME, luid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let adjusted = unsafe {
+        AdjustTokenPrivileges(
+            token,
+            0,
+            &privileges,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    // `AdjustTokenPrivileges` also succeeds when the token doesn't hold the privilege, and reports that
+    // as the last error instead
+    let error = io::Error::last_os_error();
+    unsafe { CloseHandle(token) };
+
+    if adjusted == 0 || error.raw_os_error() == Some(ERROR_NOT_ALL_ASSIGNED as i32) {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 /// Reads newline-delimited messages until one matches `secret` (returning `true`) or the client closes
@@ -832,6 +993,73 @@ mod tests {
         let command = shutdown_command();
         assert_eq!(command.get_program(), "/sbin/shutdown");
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["-h", "now"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_shuts_down_despite_inhibitor_locks() {
+        let command = logind_shutdown_command();
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["poweroff", "-i"]);
+
+        let command = forced_shutdown_command();
+        assert_eq!(command.get_program(), "systemctl");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "start",
+                "poweroff.target",
+                "--job-mode=replace-irreversibly",
+                "--no-block"
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_enables_the_shutdown_privilege() {
+        enable_shutdown_privilege().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "schedules a shutdown of this machine and then cancels it, so only CI runs it"]
+    fn test_windows_records_why_it_shut_down() {
+        use windows_sys::Win32::System::Shutdown::AbortSystemShutdownW;
+
+        initiate_shutdown(source(), 600).unwrap();
+        let aborted = unsafe { AbortSystemShutdownW(std::ptr::null()) };
+        assert_ne!(aborted, 0, "{}", io::Error::last_os_error());
+
+        let newest_shutdown_event = || {
+            let output = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-WinEvent -FilterHashtable @{LogName='System'; Id=1074} -MaxEvents 1).Message",
+                ])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+
+        // Windows may record the shutdown after `InitiateShutdownW` returns
+        let mut event = newest_shutdown_event();
+        for _ in 0..10 {
+            if event.contains("10.0.1.50") {
+                break;
+            }
+            thread::sleep(Duration::from_secs(1));
+            event = newest_shutdown_event();
+        }
+
+        assert!(event.contains("power off"), "{event}");
+        assert!(event.contains("Other (Planned)"), "{event}");
+        assert!(event.contains("0x80000000"), "{event}");
+        assert!(
+            event.contains("Requested over the network by 10.0.1.50"),
+            "{event}"
+        );
     }
 
     #[test]
